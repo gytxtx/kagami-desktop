@@ -13,17 +13,29 @@ Treat Kagami as an external Windows observation-and-action tool. Parse stdout as
 
 1. Run `kagami capabilities`; do not assume a capture backend or API is available.
 2. Find the target with `kagami list-windows`, retaining `hwnd`, PID, process name, title, and rectangle.
-3. Run `kagami observe --hwnd <HWND> --depth 1 --max-nodes 200`.
+3. Run `kagami observe --hwnd <HWND> --depth 1 --max-nodes 200 --interactive-only --include-locators interactive`.
 4. If `stable` is false, observe again.
-5. Prefer a returned, re-resolvable `locator`. Never use Runtime ID as a persistent locator.
+5. Narrow the UIA scope with `find`, then expand only the needed subtree with `get-tree`. Prefer a returned, re-resolvable `locator`; use `runtime_id` and `tree_path` only for short-lived discovery, never as persistent locators.
 6. Choose interaction semantics deliberately:
    - `invoke` / `type-text --mode value`: UIA provider behavior.
    - `click` / `key` / `type-text --mode keyboard`: physical reachability.
-7. Pass `--expected-state <guard_path>` to state-changing commands. On `STALE_OBSERVATION`, observe again.
-8. Use `wait-for` conditions instead of fixed sleeps.
-9. Observe again after the action. Claim success only after the expected visual and/or UIA state change is confirmed.
+7. Bind every physical action to its target HWND. `click` may derive it from a validated `--expected-state` guard; `key` and `type-text --mode keyboard` require explicit `--hwnd`. The target window must be foreground when Kagami injects input.
+8. Pass the newest `--expected-state <guard_path>` to state-changing commands. A guard expires after 120 seconds, but this TTL is only an upper bound: make a fresh observation immediately before acting. On `STALE_OBSERVATION`, observe again.
+9. Prefer the positional wait syntax `kagami wait-for element ...`; `kagami wait-for --condition element ...` remains compatible. Use wait conditions instead of fixed sleeps.
+10. Observe again after the action. Claim success only after the expected visual and/or UIA state change is confirmed.
 
 Read [CLI workflow and recovery rules](references/cli-workflow.md) when forming commands or handling failures.
+
+## Progressive discovery
+
+```powershell
+kagami find --hwnd 0x607fc --control-type Button --name "Save" --max-results 20
+kagami get-tree --hwnd 0x607fc --runtime-id "42.5678" --depth 1
+kagami get-tree --hwnd 0x607fc --locator '{...}' --depth 1
+kagami get-tree --hwnd 0x607fc --depth 2 --interactive-only --include-locators interactive
+```
+
+For `get-tree`, `--path`, `--runtime-id`, and `--locator` are mutually exclusive start selectors. `--include-locators all|interactive|none` controls locator payload size. A returned `tree_path` is relative to the selected UIA view.
 
 ## Capture rules
 
@@ -35,11 +47,27 @@ Read [CLI workflow and recovery rules](references/cli-workflow.md) when forming 
 
 ## Safety
 
-- Confirm the target and foreground state before physical input.
+- Use target-bound physical commands such as:
+
+  ```powershell
+  kagami click --hwnd 0x607fc --x 840 --y 560 --expected-state "C:\...\guard.json"
+  kagami key --keys "CTRL+L" --hwnd 0x607fc --expected-state "C:\...\guard.json"
+  kagami type-text --text "hello" --mode keyboard --hwnd 0x607fc --expected-state "C:\...\guard.json"
+  ```
+
+- Confirm the target and foreground state before physical input. The target window must be foreground; for clicks, the point must also hit that window family.
+- `physical_input_generated: true` only means Kagami injected input; it does not prove the business postcondition. Verify with `wait-for` and a fresh observation.
 - Never reuse coordinates after the window moves, resizes, or the guard expires.
 - Clipboard fallback is opt-in through `--allow-clipboard`.
 - Semantic success does not prove a user can physically click or type.
+- UIA `is_offscreen` is a provider signal, not proof of visual visibility. Confirm visual state with a current screenshot, especially after a `uia_visibility_ambiguous` warning.
 - Keep automation limited to the user-authorized application and action.
+
+## Machine protocol
+
+- stdout contains one JSON document per protocol call; diagnostics go to stderr.
+- Parse errors also use the JSON error envelope and return exit code 2 (退出码 2).
+- Branch on `error.code`, not localized or diagnostic text.
 
 ## Completion check
 

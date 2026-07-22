@@ -32,6 +32,8 @@ Kagami Desktop 是一个 CLI 工具，为 AI Agent 提供 Windows 桌面的"眼�
 }
 ```
 
+`physical_input_generated = true` 仅表示输入已注入，不代表业务后置条件完成。物理输入结果还返回 `target_hwnd`、`target_foreground_verified` 和 `target_delivery_verified`；Agent 必须继续执行条件等待和 fresh observation，才能判断用户目标是否达成。
+
 ### 截图模式（Capture Mode）
 
 | 模式 | 说明 | 后端 |
@@ -42,7 +44,7 @@ Kagami Desktop 是一个 CLI 工具，为 AI Agent 提供 Windows 桌面的"眼�
 | `visible-desktop` | 捕获桌面合成帧上指定区域 | DXGI Desktop Duplication |
 | `auto` | 优先 `window`，失败时按策略降级 | 自动选择 |
 
-跨语义降级（`window` → `visible-desktop`）默认关闭，需 `--allow-semantic-fallback` 显式允许。
+跨后端的语义降级（`window` → `visible-desktop`）默认关闭，需 `--allow-semantic-fallback` 显式允许。`legacy_window_capture` 内部仍可在 PrintWindow/DWM 失败后退化为可见桌面裁剪；该结果报告 `actual_mode = visible-desktop-crop`、`fallback_used = true`、`occlusion_possible = true`，所以 `window` 请求不等于无条件保证无遮挡。
 返回 `actual_mode`、`capture_backend`、`fallback_used`、`occlusion_possible`。
 
 ### 协调快照（Coordinated Snapshot）
@@ -88,7 +90,7 @@ One-shot CLI 的跨调用状态一致性通过 guard 文件实现。
 - 窗口矩形未显著变化
 - 前台窗口一致
 
-不一致返回 `STALE_OBSERVATION`。Guard 文件超过 30 秒自动视为失效。
+不一致返回 `STALE_OBSERVATION`。Guard 文件超过 120 秒自动视为失效；120 秒只是最长 TTL，不是界面仍新鲜的证明。每次状态变更前仍需 fresh observation/实时校验，不能因为 guard 尚未过期就重放旧操作。
 命名 Mutex（`Global\Kagami-{user-session-id}`）仅用于防止并行输入冲突。
 
 ### Locator（元素定位路径）
@@ -133,6 +135,7 @@ capabilities    — 查询环境能力
 list-windows    — 枚举所有顶层窗口
 observe         — 协调快照（截图 + UIA 树 + 窗口状态 + 光标）
 get-tree        — 逐层展开 UIA 控件树
+find            — 按 UIA 属性低成本查找控件
 screenshot      — 独立截图（窗口/区域/显示器）
 
 activate        — 尝试将窗口带到前台
@@ -144,7 +147,7 @@ key             — 组合键输入
 wait-for        — 条件等待（element/element-gone/property/window/window-rect-stable/screenshot-stable）
 ```
 
-推迟到 post-MVP：`focus`、`find`、`scroll`、`cleanup`。
+推迟到 post-MVP：`focus`、`scroll`、`cleanup`。
 
 ## 命令详解
 
@@ -179,6 +182,7 @@ list-windows [--visible-only] [--process-name X] [--title X]
 
 ```
 observe --hwnd X [--depth 1] [--max-nodes 200] [--view control]
+        [--interactive-only] [--include-locators all|interactive|none]
         [--capture-mode window|visible-desktop|auto] [--allow-semantic-fallback]
 ```
 
@@ -187,8 +191,9 @@ observe --hwnd X [--depth 1] [--max-nodes 200] [--view control]
 ### `get-tree`
 
 ```
-get-tree --hwnd X [--runtime-id "42.1234"] [--path "0/2"]
+get-tree --hwnd X [--runtime-id "42.1234" | --path "0/2" | --locator '{...}']
          [--depth 1] [--max-nodes 200] [--view control|content|raw]
+         [--interactive-only] [--include-locators all|interactive|none]
 ```
 
 逐层展开 UIA 控件树。默认 `ControlView`，默认展开一层，默认最多 200 子节点。
@@ -198,6 +203,7 @@ get-tree --hwnd X [--runtime-id "42.1234"] [--path "0/2"]
 {
   "node_id": "temporary-id",
   "runtime_id": [42, 5678],
+  "tree_path": "0/2",
   "control_type": "Button",
   "name": "Login",
   "automation_id": "BtnLogin",
@@ -218,6 +224,19 @@ get-tree --hwnd X [--runtime-id "42.1234"] [--path "0/2"]
   "locator": { ... }
 }
 ```
+
+`children_count` 是当前响应中输出的直接子节点数量；当节点预算或深度限制导致未输出全部可见子节点时，`children_truncated` 为 `true`。
+
+`--path`、`--runtime-id`、`--locator` 最多传一个，分别从当前 UIA view 的索引路径、短期 Runtime ID 或可重解析 locator 开始展开。`tree_path` 相对于请求的 view；Runtime ID 与 tree path 用于当前观察内的渐进发现，不作为持久 locator。`--interactive-only` 保留交互节点及其祖先，`--include-locators all|interactive|none` 分别输出全部、仅交互节点或不输出 locator。
+
+### `find`
+
+```
+find --hwnd X [--name X] [--automation-id X] [--control-type X] [--class-name X]
+     [--max-results 20] [--view control|content|raw]
+```
+
+至少提供一个属性筛选条件。`find` 用于先低成本定位候选，再把返回的 `runtime_id` 或 `locator` 交给 `get-tree` 做局部展开；返回结果包含 `tree_path`。
 
 ### `screenshot`
 
@@ -249,10 +268,10 @@ invoke --locator '{...}' [--expected-state guard-uuid.json]
 ### `click`
 
 ```
-click --x Y --y Y [--right] [--expected-state guard-uuid.json]
+click --hwnd X --x Y --y Y [--right] [--expected-state guard-uuid.json]
 ```
 
-物理鼠标点击（`SendInput`），屏幕物理坐标。
+物理鼠标点击（`SendInput`），屏幕物理坐标。`click` 必须通过显式 `--hwnd` 或已验证的 `--expected-state` guard 绑定目标；两者同时存在时必须一致。注入前目标窗口必须位于前台，且坐标必须命中同一窗口族。
 
 ### `type-text`
 
@@ -267,15 +286,17 @@ type-text --text "hello" [--hwnd X] [--locator '{...}']
 2. Unicode `SendInput`
 3. 剪贴板粘贴（仅 `--allow-clipboard` 时启用）
 
+`type-text --mode keyboard` 必须显式提供 `--hwnd`，并在 `SendInput` 前实时校验目标窗口族位于前台。`auto` 若要允许物理路径，也应提供 HWND；guard 可额外校验观察状态，但不会替代 keyboard 模式的 HWND。
+
 `--allow-clipboard` 模式下：保存 sequence number → 写入 → 粘贴 → 检查 sequence number → 仅当未被中间修改时恢复；被修改时返回 warning 且不覆盖。
 
 ### `key`
 
 ```
-key --keys "CTRL+L" [--hwnd X] [--expected-state guard-uuid.json]
+key --keys "CTRL+L" --hwnd X [--expected-state guard-uuid.json]
 ```
 
-键盘组合键（`SendInput` 虚拟键）。
+键盘组合键（`SendInput` 虚拟键）。HWND 必填；目标窗口必须位于前台。guard 可额外校验观察状态，但不替代 HWND。
 
 ### `wait-for`
 
@@ -287,6 +308,8 @@ wait-for window --process X [--title X]
 wait-for window-rect-stable --hwnd X [--consecutive 5]
 wait-for screenshot-stable --hwnd X [--region x,y,w,h] [--threshold 0.95] [--consecutive 3]
 ```
+
+位置 condition 是首选语法（例如 `wait-for element ...`）；`wait-for --condition element ...` 为现有调用方保留兼容。两者同时提供时必须一致。
 
 `wait-for idle` 仅返回 `process-input-idle` 条件，不为 `application_ready` 语义负责。
 
@@ -328,8 +351,9 @@ wait-for screenshot-stable --hwnd X [--region x,y,w,h] [--threshold 0.95] [--con
 | 1 | 预期的操作失败 |
 | 2 | 程序自身异常或协议错误 |
 
-- stdout → JSON
+- stdout → 成功和失败均为单个 JSON 文档
 - stderr → 日志和 traceback（`--verbose` 时）
+- 命令行解析错误 → 单个 JSON 错误响应，退出码 2
 - 图片 → 临时文件路径（`%TEMP%\kagami\screenshots\<uuid>.png`，每次调用清理 5 分钟以上的旧文件）
 
 ## 架构抽象层
@@ -368,6 +392,7 @@ IObservationGuardStore
 - 处理虚拟化元素：识别 `VirtualizedItemPattern`，返回 `is_virtualized` 字段
 - UIA 在工作线程 MTA 上执行；主线程处理 CLI 参数解析、Mutex、watchdog
 - 区分 `OPERATION_TIMEOUT`（可控）和 `UIA_PROVIDER_UNRESPONSIVE`（kill 进程）
+- `is_offscreen` 是 UIA provider 信号，并不证明元素在像素层面视觉可见；视觉可见性需用当前截图确认。重叠顶层 Custom surface 可能触发 `uia_visibility_ambiguous` warning。
 
 ## 并发保护
 
