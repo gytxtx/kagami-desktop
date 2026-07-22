@@ -2,6 +2,7 @@ using System.CommandLine;
 using Kagami.Backends;
 using Kagami.Commands;
 using Kagami.Protocol;
+using Kagami.Utilities;
 
 namespace Kagami;
 
@@ -12,11 +13,12 @@ class Program
         Utilities.TempFileManager.CleanupExpired();
 
         var guardStore = new TempFileObservationGuardStore();
-        using var automation = new UiaAutomationBackend(guardStore);
+        var windowInfoReader = new WindowInfoReader();
+        using var automation = new UiaAutomationBackend(guardStore, windowInfoReader);
         using var input = new Win32InputBackend(automation, guardStore);
         var capture = new CaptureService();
 
-        var rootCommand = BuildRootCommand(automation, input, capture, guardStore);
+        var rootCommand = BuildRootCommand(automation, input, capture, guardStore, windowInfoReader);
 
         return await InvokeAsync(rootCommand, args);
     }
@@ -25,13 +27,18 @@ class Program
         IAutomationBackend automation,
         IInputBackend input,
         CaptureService capture,
-        IObservationGuardStore guardStore)
+        IObservationGuardStore guardStore,
+        IWindowInfoReader? windowInfoReader = null)
     {
         var rootCommand = new RootCommand("Kagami — AI Agent Windows Desktop Observation and Action Protocol");
 
         rootCommand.AddCommand(CreateCapabilitiesCommand(new CapabilitiesCommand(capture)));
         rootCommand.AddCommand(CreateListWindowsCommand(new ListWindowsCommand(automation)));
-        rootCommand.AddCommand(CreateObserveCommand(new ObserveCommand(automation, capture, guardStore)));
+        rootCommand.AddCommand(CreateObserveCommand(new ObserveCommand(
+            automation,
+            capture,
+            guardStore,
+            windowInfoReader ?? new WindowInfoReader())));
         rootCommand.AddCommand(CreateGetTreeCommand(new GetTreeCommand(automation)));
         rootCommand.AddCommand(CreateFindCommand(new FindCommand(automation)));
         rootCommand.AddCommand(CreateScreenshotCommand(new ScreenshotCommand(capture)));

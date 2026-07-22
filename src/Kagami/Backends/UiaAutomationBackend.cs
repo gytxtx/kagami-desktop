@@ -13,11 +13,20 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
 {
     private readonly UIA3Automation _automation;
     private readonly TempFileObservationGuardStore _guardStore;
+    private readonly IWindowInfoReader _windowInfoReader;
 
     public UiaAutomationBackend(TempFileObservationGuardStore guardStore)
+        : this(guardStore, new WindowInfoReader())
+    {
+    }
+
+    internal UiaAutomationBackend(
+        TempFileObservationGuardStore guardStore,
+        IWindowInfoReader windowInfoReader)
     {
         _automation = new UIA3Automation();
         _guardStore = guardStore;
+        _windowInfoReader = windowInfoReader;
     }
 
     public Task<List<WindowInfo>> ListWindowsAsync(bool visibleOnly, string? processName, string? title, CancellationToken ct)
@@ -25,6 +34,8 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         return Task.Run(() =>
         {
             var results = new List<WindowInfo>();
+            var foregroundHwnd = NativeMethods.GetForegroundWindow();
+
             // Use FlaUI's desktop root to enumerate top-level windows for better property access
             var desktop = _automation.GetDesktop();
             var windows = desktop.FindAllChildren(cf => cf.ByControlType(ControlType.Window));
@@ -38,7 +49,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
                     var hwnd = window.Properties.NativeWindowHandle.ValueOrDefault;
                     if (hwnd == IntPtr.Zero) continue;
 
-                    var windowInfo = WindowInfoReader.Read(hwnd);
+                    var windowInfo = _windowInfoReader.Read(hwnd, foregroundHwnd);
 
                     if (visibleOnly && (!windowInfo.Visible || windowInfo.Minimized))
                         continue;

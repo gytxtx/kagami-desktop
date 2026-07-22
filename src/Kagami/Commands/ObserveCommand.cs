@@ -10,12 +10,23 @@ public class ObserveCommand
     private readonly IAutomationBackend _automation;
     private readonly CaptureService _capture;
     private readonly IObservationGuardStore _guardStore;
+    private readonly IWindowInfoReader _windowInfoReader;
 
     public ObserveCommand(IAutomationBackend automation, CaptureService capture, IObservationGuardStore guardStore)
+        : this(automation, capture, guardStore, new WindowInfoReader())
+    {
+    }
+
+    internal ObserveCommand(
+        IAutomationBackend automation,
+        CaptureService capture,
+        IObservationGuardStore guardStore,
+        IWindowInfoReader windowInfoReader)
     {
         _automation = automation;
         _capture = capture;
         _guardStore = guardStore;
+        _windowInfoReader = windowInfoReader;
     }
 
     public async Task<int> RunAsync(
@@ -152,7 +163,7 @@ public class ObserveCommand
             var foregroundHwnd = NativeMethods.GetForegroundWindow();
 
             // Step 9: Window info
-            var windowInfo = WindowInfoReader.Read(hwnd);
+            var windowInfo = _windowInfoReader.Read(hwnd, foregroundHwnd, rectAfter);
 
             var observationData = new ObservationData
             {
