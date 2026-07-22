@@ -48,6 +48,14 @@ internal static partial class NativeMethods
     [DllImport(User32, SetLastError = true)]
     public static extern IntPtr GetForegroundWindow();
 
+    [DllImport(User32, SetLastError = true)]
+    public static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport(User32, SetLastError = true)]
+    public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    public const uint GW_OWNER = 4;
+
     [DllImport(Dwmapi, SetLastError = true)]
     public static extern int DwmGetWindowAttribute(
         IntPtr hwnd,

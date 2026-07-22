@@ -20,6 +20,7 @@ public static class ErrorCodes
     public const string InputInjectionFailed = "INPUT_INJECTION_FAILED";
     public const string TargetHigherIntegrity = "TARGET_HIGHER_INTEGRITY";
     public const string ForegroundActivationDenied = "FOREGROUND_ACTIVATION_DENIED";
+    public const string PointNotInTarget = "POINT_NOT_IN_TARGET";
 
     // Capture errors
     public const string CaptureBackendUnavailable = "CAPTURE_BACKEND_UNAVAILABLE";
