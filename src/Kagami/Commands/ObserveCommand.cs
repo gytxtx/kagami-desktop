@@ -120,6 +120,7 @@ public class ObserveCommand
             {
                 tree = await _automation.GetTreeAsync(treeOptions, CancellationToken.None);
                 uiaCompletedAt = DateTime.UtcNow.ToString("O");
+                AddTreeWarnings(warnings, tree);
             }
             catch (Exception ex)
             {
@@ -210,6 +211,17 @@ public class ObserveCommand
         {
             return writer.FatalException(ex);
         }
+    }
+
+    internal static void AddTreeWarnings(List<JsonWarning> warnings, TreeNode? tree)
+    {
+        var emptyTreeWarning = UiaTreeWarnings.ForEmptyRoot(tree);
+        if (emptyTreeWarning is not null)
+            warnings.Add(emptyTreeWarning);
+
+        var visibilityWarning = UiaTreeWarnings.ForAmbiguousVisibility(tree);
+        if (visibilityWarning is not null)
+            warnings.Add(visibilityWarning);
     }
 
     private static IntPtr ParseHwnd(string hwndStr)
