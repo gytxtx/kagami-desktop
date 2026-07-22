@@ -30,6 +30,22 @@ public class Win32InputBackendTests
     }
 
     [Fact]
+    public void Click_WithValidTarget_ReportsTargetVerification()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.ClickAsync(target, 100, 100, false, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal("0x64", result.Interaction.TargetHwnd);
+        Assert.True(result.Interaction.TargetForegroundVerified);
+        Assert.True(result.Interaction.TargetDeliveryVerified);
+    }
+
+    [Fact]
     public void Key_WhenKeyboardTargetValidationFails_DoesNotInject()
     {
         var target = new IntPtr(100);
@@ -99,6 +115,82 @@ public class Win32InputBackendTests
         Assert.Equal(0, injector.Calls);
     }
 
+    [Theory]
+    [InlineData(InteractionMode.Physical)]
+    [InlineData(InteractionMode.Auto)]
+    public void TypeText_KeyboardSuccess_ReportsTargetVerification(InteractionMode mode)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.TypeTextAsync(new TypeTextOptions
+        {
+            Text = "hello",
+            Mode = mode,
+            Hwnd = target
+        }, CancellationToken.None).GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal("sendinput-unicode", result.Interaction.ModeActual);
+        Assert.True(result.Interaction.PhysicalInputGenerated);
+        Assert.Equal("0x64", result.Interaction.TargetHwnd);
+        Assert.True(result.Interaction.TargetForegroundVerified);
+        Assert.True(result.Interaction.TargetDeliveryVerified);
+    }
+
+    [Fact]
+    public void TypeText_ClipboardFallbackSuccess_ReportsPhysicalInputAndTargetVerification()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector(0, 4);
+        var clipboard = new FakeClipboardAdapter();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector, clipboard);
+
+        var result = fixture.Input.TypeTextAsync(new TypeTextOptions
+        {
+            Text = "hello",
+            Mode = InteractionMode.Physical,
+            AllowClipboard = true,
+            Hwnd = target
+        }, CancellationToken.None).GetAwaiter().GetResult();
+
+        Assert.Equal(2, injector.Calls);
+        Assert.Equal([10, 4], injector.InputCounts);
+        Assert.Equal(1, clipboard.SetTextCalls);
+        Assert.Equal("clipboard-paste", result.Interaction.ModeActual);
+        Assert.False(result.ClipboardSequenceChanged);
+        Assert.True(result.Interaction.PhysicalInputGenerated);
+        Assert.Equal("0x64", result.Interaction.TargetHwnd);
+        Assert.True(result.Interaction.TargetForegroundVerified);
+        Assert.True(result.Interaction.TargetDeliveryVerified);
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(3u)]
+    public void TypeText_ClipboardFallbackWithIncompleteInjection_Fails(uint injectedCount)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector(0, injectedCount);
+        var clipboard = new FakeClipboardAdapter();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector, clipboard);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.TypeTextAsync(new TypeTextOptions
+            {
+                Text = "hello",
+                Mode = InteractionMode.Physical,
+                AllowClipboard = true,
+                Hwnd = target
+            }, CancellationToken.None).GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InputInjectionFailed, exception.ErrorCode);
+        Assert.Equal(2, injector.Calls);
+        Assert.Equal([10, 4], injector.InputCounts);
+        Assert.Equal(1, clipboard.SetTextCalls);
+    }
+
     [Fact]
     public void Key_WithValidTarget_InjectsThroughAdapterAndReportsVerification()
     {
@@ -165,7 +257,10 @@ public class Win32InputBackendTests
         return windows;
     }
 
-    private static InputFixture CreateFixture(FakeWindowSystem windows, RecordingInputInjector injector)
+    private static InputFixture CreateFixture(
+        FakeWindowSystem windows,
+        RecordingInputInjector injector,
+        IClipboardAdapter? clipboard = null)
     {
         var guardStore = new TempFileObservationGuardStore();
         var automation = new UiaAutomationBackend(guardStore);
@@ -173,7 +268,8 @@ public class Win32InputBackendTests
             automation,
             guardStore,
             new PhysicalInputTargetValidator(windows),
-            injector);
+            injector,
+            clipboard ?? new FakeClipboardAdapter());
         return new InputFixture(automation, input);
     }
 
@@ -190,12 +286,36 @@ public class Win32InputBackendTests
 
     private sealed class RecordingInputInjector : IInputInjector
     {
+        private readonly Queue<uint> _results;
+
+        public RecordingInputInjector(params uint[] results)
+        {
+            _results = new Queue<uint>(results);
+        }
+
         public int Calls { get; private set; }
+        public List<int> InputCounts { get; } = [];
 
         public uint SendInput(NativeMethods.INPUT[] inputs)
         {
             Calls++;
-            return (uint)inputs.Length;
+            InputCounts.Add(inputs.Length);
+            return _results.TryDequeue(out var result) ? result : (uint)inputs.Length;
+        }
+    }
+
+    private sealed class FakeClipboardAdapter : IClipboardAdapter
+    {
+        private uint _sequenceNumber = 100;
+
+        public int SetTextCalls { get; private set; }
+
+        public uint GetSequenceNumber() => _sequenceNumber;
+
+        public void SetText(string text)
+        {
+            SetTextCalls++;
+            _sequenceNumber++;
         }
     }
 

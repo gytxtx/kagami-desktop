@@ -14,10 +14,42 @@ internal interface IInputInjector
     uint SendInput(INPUT[] inputs);
 }
 
+internal interface IClipboardAdapter
+{
+    uint GetSequenceNumber();
+    void SetText(string text);
+}
+
 internal sealed class NativeInputInjector : IInputInjector
 {
     public uint SendInput(INPUT[] inputs) =>
         NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+}
+
+internal sealed class NativeClipboardAdapter : IClipboardAdapter
+{
+    public uint GetSequenceNumber() => NativeMethods.GetClipboardSequenceNumber();
+
+    public void SetText(string text)
+    {
+        if (!NativeMethods.OpenClipboard(IntPtr.Zero))
+            throw new InvalidOperationException("Cannot open clipboard.");
+
+        try
+        {
+            NativeMethods.EmptyClipboard();
+
+            int size = (text.Length + 1) * 2;
+            IntPtr hMem = Marshal.AllocHGlobal(size);
+            Marshal.Copy(Encoding.Unicode.GetBytes(text + '\0'), 0, hMem, size);
+            NativeMethods.SetClipboardData(NativeMethods.CF_UNICODETEXT, hMem);
+            // The clipboard owns hMem after SetClipboardData succeeds.
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+    }
 }
 
 public class Win32InputBackend : IInputBackend, IDisposable
@@ -27,13 +59,15 @@ public class Win32InputBackend : IInputBackend, IDisposable
     private readonly IObservationGuardStore _guardStore;
     private readonly PhysicalInputTargetValidator _targetValidator;
     private readonly IInputInjector _inputInjector;
+    private readonly IClipboardAdapter _clipboard;
 
     public Win32InputBackend(IAutomationBackend automation, IObservationGuardStore guardStore)
         : this(
             automation,
             guardStore,
             new PhysicalInputTargetValidator(new NativeWindowSystem()),
-            new NativeInputInjector())
+            new NativeInputInjector(),
+            new NativeClipboardAdapter())
     {
     }
 
@@ -41,12 +75,14 @@ public class Win32InputBackend : IInputBackend, IDisposable
         IAutomationBackend automation,
         IObservationGuardStore guardStore,
         PhysicalInputTargetValidator targetValidator,
-        IInputInjector inputInjector)
+        IInputInjector inputInjector,
+        IClipboardAdapter clipboard)
     {
         _automation = automation;
         _guardStore = guardStore;
         _targetValidator = targetValidator;
         _inputInjector = inputInjector;
+        _clipboard = clipboard;
         _rawAutomation = new UIA3Automation();
     }
 
@@ -250,7 +286,7 @@ public class Win32InputBackend : IInputBackend, IDisposable
                         {
                             ModeRequested = mode.ToString().ToLowerInvariant(),
                             ModeActual = actualMode,
-                            PhysicalInputGenerated = false,
+                            PhysicalInputGenerated = true,
                             TargetHwnd = FormatHwnd(validation.TargetHwnd),
                             TargetForegroundVerified = validation.ForegroundVerified,
                             TargetDeliveryVerified = validation.DeliveryVerified
@@ -428,31 +464,8 @@ public class Win32InputBackend : IInputBackend, IDisposable
 
     private bool ClipboardPaste(string text)
     {
-        uint seqBefore = NativeMethods.GetClipboardSequenceNumber();
-
-        if (!NativeMethods.OpenClipboard(IntPtr.Zero))
-            throw new InvalidOperationException("Cannot open clipboard.");
-
-        try
-        {
-            NativeMethods.EmptyClipboard();
-
-            int size = (text.Length + 1) * 2; // UTF-16
-            IntPtr hMem = Marshal.AllocHGlobal(size);
-            try
-            {
-                Marshal.Copy(Encoding.Unicode.GetBytes(text + '\0'), 0, hMem, size);
-                NativeMethods.SetClipboardData(NativeMethods.CF_UNICODETEXT, hMem);
-            }
-            finally
-            {
-                // Don't free — clipboard owns this memory
-            }
-        }
-        finally
-        {
-            NativeMethods.CloseClipboard();
-        }
+        uint seqBefore = _clipboard.GetSequenceNumber();
+        _clipboard.SetText(text);
 
         // Send Ctrl+V
         var inputs = new INPUT[4];
@@ -461,10 +474,16 @@ public class Win32InputBackend : IInputBackend, IDisposable
         inputs[2] = CreateKeyInput((ushort)VK_V, false);
         inputs[3] = CreateKeyInput((ushort)VK_CONTROL, false);
 
-        _inputInjector.SendInput(inputs);
+        uint result = _inputInjector.SendInput(inputs);
+        if (result != inputs.Length)
+        {
+            throw new InvalidOperationException(
+                $"Clipboard paste SendInput injected {result} of {inputs.Length} events. " +
+                $"GetLastError: {Marshal.GetLastWin32Error()}");
+        }
 
         // Check if clipboard was modified during our operation
-        uint seqAfter = NativeMethods.GetClipboardSequenceNumber();
+        uint seqAfter = _clipboard.GetSequenceNumber();
         return seqAfter != seqBefore + 1;
     }
 
