@@ -104,7 +104,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
             }
             else if (options.Path is not null)
             {
-                startElement = NavigatePath(options.Hwnd, options.Path);
+                startElement = NavigatePath(options.Hwnd, options.Path, options.View);
                 if (startElement is null)
                     return null;
             }
@@ -120,6 +120,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
                 options.MaxNodes,
                 options.Hwnd,
                 "",
+                GetWalker(options.View),
                 ct);
         }, ct);
     }
@@ -141,7 +142,8 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
             }
 
             var results = new List<TreeNode>();
-            FindRecursive(start, options, results, 20, options.Hwnd, ct);
+            var view = options.StartLocator?.View ?? "control";
+            FindRecursive(start, options, results, 20, options.Hwnd, view, GetWalker(view), ct);
             return results;
         }, ct);
     }
@@ -154,7 +156,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
             if (element is null) return null;
 
             var hwnd = ParseHwnd(locator.Window.Hwnd);
-            var node = BuildSingleNode(element, hwnd, locator);
+            var node = BuildSingleNode(element, hwnd, locator, locator.View);
             if (node is null) return null;
 
             var expectedRt = string.Join(".", element.Properties.RuntimeId.ValueOrDefault ?? Array.Empty<int>());
@@ -198,155 +200,18 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         var current = _automation.FromHandle(hwnd);
         if (current is null) return null;
 
-        foreach (var segment in locator.Path)
+        var walker = GetWalker(locator.View);
+        for (var segmentIndex = 0; segmentIndex < locator.Path.Count; segmentIndex++)
         {
             ct.ThrowIfCancellationRequested();
-            var resolved = ResolveSegmentWithAmbiguity(current, segment);
-            if (resolved is null) return null;
-            current = resolved;
+            var segment = locator.Path[segmentIndex];
+            var children = GetChildren(current, walker);
+            var candidates = ToCandidates(children);
+            var selected = LocatorSegmentMatcher.Select(candidates, segment, segmentIndex);
+            current = (AutomationElement)selected.Value;
         }
 
         return current;
-    }
-
-    /// <summary>
-    /// Resolve a single locator segment with proper priority matching.
-    ///
-    /// Strategy (hierarchical — first match wins):
-    ///   1. ControlType + AutomationId (exact) — most stable
-    ///   2. ControlType + Name (exact) + ClassName (exact) — second priority
-    ///   3. ControlType + ClassName + ordinal — fallback
-    ///
-    /// Returns null if no match is found.
-    /// Throws CommandException with LOCATOR_AMBIGUOUS if multiple candidates match
-    /// at the highest-priority strategy that returns anything.
-    /// </summary>
-    private AutomationElement? ResolveSegmentWithAmbiguity(AutomationElement parent, LocatorSegment segment)
-    {
-        var children = parent.FindAllChildren();
-
-        // Strategy 1: ControlType + AutomationId
-        if (segment.AutomationId is not null)
-        {
-            var matches = new List<AutomationElement>();
-            foreach (var child in children)
-            {
-                try
-                {
-                    if (segment.ControlType is not null)
-                    {
-                        var ct = GetControlTypeName(child);
-                        if (!ControlTypeMatches(ct, segment.ControlType))
-                            continue;
-                    }
-
-                    var autoId = child.Properties.AutomationId.ValueOrDefault;
-                    if (string.Equals(autoId, segment.AutomationId, StringComparison.OrdinalIgnoreCase))
-                        matches.Add(child);
-                }
-                catch { }
-            }
-
-            if (matches.Count == 1) return matches[0];
-            if (matches.Count > 1 && segment.Ordinal < matches.Count)
-                return matches[segment.Ordinal];
-            if (matches.Count > 1)
-                throw new CommandException(ErrorCodes.LocatorAmbiguous,
-                    $"LOCATOR_AMBIGUOUS: {matches.Count} elements match automation_id='{segment.AutomationId}' " +
-                    $"control_type='{segment.ControlType}', but ordinal={segment.Ordinal} is out of range.");
-            // Zero matches at this priority → return null (don't fall through;
-            // if AutomationId is specified, it's the authoritative key)
-            return null;
-        }
-
-        // Strategy 2: ControlType + Name + ClassName
-        if (segment.Name is not null)
-        {
-            var matches = new List<AutomationElement>();
-            foreach (var child in children)
-            {
-                try
-                {
-                    if (segment.ControlType is not null)
-                    {
-                        var ct = GetControlTypeName(child);
-                        if (!ControlTypeMatches(ct, segment.ControlType))
-                            continue;
-                    }
-
-                    var name = child.Properties.Name.ValueOrDefault;
-                    if (name is null || !string.Equals(name, segment.Name, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    if (segment.ClassName is not null)
-                    {
-                        var cls = child.Properties.ClassName.ValueOrDefault;
-                        if (!string.Equals(cls, segment.ClassName, StringComparison.OrdinalIgnoreCase))
-                            continue;
-                    }
-
-                    matches.Add(child);
-                }
-                catch { }
-            }
-
-            if (matches.Count == 1) return matches[0];
-            if (matches.Count > 1 && segment.Ordinal < matches.Count)
-                return matches[segment.Ordinal];
-            if (matches.Count > 1)
-                throw new CommandException(ErrorCodes.LocatorAmbiguous,
-                    $"LOCATOR_AMBIGUOUS: {matches.Count} elements match name='{segment.Name}' " +
-                    $"control_type='{segment.ControlType}' class_name='{segment.ClassName}', " +
-                    $"but ordinal={segment.Ordinal} is out of range.");
-            return null;
-        }
-
-        // Strategy 3: ControlType + ClassName + ordinal
-        {
-            var matches = new List<AutomationElement>();
-            foreach (var child in children)
-            {
-                try
-                {
-                    if (segment.ControlType is not null)
-                    {
-                        var ct = GetControlTypeName(child);
-                        if (!ControlTypeMatches(ct, segment.ControlType))
-                            continue;
-                    }
-
-                    if (segment.ClassName is not null)
-                    {
-                        var cls = child.Properties.ClassName.ValueOrDefault;
-                        if (!string.Equals(cls, segment.ClassName, StringComparison.OrdinalIgnoreCase))
-                            continue;
-                    }
-
-                    matches.Add(child);
-                }
-                catch { }
-            }
-
-            if (matches.Count == 0) return null;
-            if (segment.Ordinal >= matches.Count)
-                throw new CommandException(ErrorCodes.LocatorNotFound,
-                    $"LOCATOR_NOT_FOUND: {matches.Count} elements match control_type='{segment.ControlType}' " +
-                    $"class_name='{segment.ClassName}', but ordinal={segment.Ordinal} is out of range.");
-            return matches[segment.Ordinal];
-        }
-    }
-
-    /// <summary>
-    /// Check if a ControlType string matches a segment's ControlType pattern.
-    /// Exact match with case-insensitivity. The segment may omit the "ControlType." prefix.
-    /// </summary>
-    private static bool ControlTypeMatches(string? actual, string expected)
-    {
-        if (actual is null) return false;
-        return string.Equals(
-            StripPrefix(actual, "ControlType."),
-            StripPrefix(expected, "ControlType."),
-            StringComparison.OrdinalIgnoreCase);
     }
 
     public ObservationGuard? BuildGuard(IntPtr hwnd)
@@ -439,7 +304,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
 
             // Walk the tree from the window root to find the element with this runtime ID
             var root = _automation.FromHandle(hwnd);
-            return FindByRuntimeIdRecursive(root, rtId, 50);
+            return FindByRuntimeIdRecursive(root, rtId, 50, GetWalker("raw"));
         }
         catch
         {
@@ -447,7 +312,11 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         }
     }
 
-    private AutomationElement? FindByRuntimeIdRecursive(AutomationElement element, int[] targetRtId, int maxDepth)
+    private AutomationElement? FindByRuntimeIdRecursive(
+        AutomationElement element,
+        int[] targetRtId,
+        int maxDepth,
+        ITreeWalker walker)
     {
         if (maxDepth <= 0) return null;
 
@@ -455,29 +324,29 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         if (currentRtId is not null && currentRtId.SequenceEqual(targetRtId))
             return element;
 
-        var children = element.FindAllChildren();
-        foreach (var child in children)
+        foreach (var child in GetChildren(element, walker))
         {
-            var result = FindByRuntimeIdRecursive(child, targetRtId, maxDepth - 1);
+            var result = FindByRuntimeIdRecursive(child, targetRtId, maxDepth - 1, walker);
             if (result is not null) return result;
         }
 
         return null;
     }
 
-    private AutomationElement? NavigatePath(IntPtr hwnd, string path)
+    private AutomationElement? NavigatePath(IntPtr hwnd, string path, string view)
     {
         var root = _automation.FromHandle(hwnd);
         var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
         var current = root;
+        var walker = GetWalker(view);
 
         foreach (var part in parts)
         {
             if (!int.TryParse(part, out int childIndex))
                 return null;
 
-            var children = current.FindAllChildren();
-            if (childIndex < 0 || childIndex >= children.Length)
+            var children = GetChildren(current, walker);
+            if (childIndex < 0 || childIndex >= children.Count)
                 return null;
 
             current = children[childIndex];
@@ -493,6 +362,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         int maxNodesBudget,
         IntPtr rootHwnd,
         string parentPath,
+        ITreeWalker walker,
         CancellationToken ct)
     {
         if (remainingDepth < 0 || maxNodesBudget <= 0) return null;
@@ -500,7 +370,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
 
         try
         {
-            var node = BuildSingleNode(element, rootHwnd, null);
+            var node = BuildSingleNode(element, rootHwnd, null, view);
             if (node is null) return null;
 
             // remainingDepth=0 means: return just this node, no children.
@@ -510,8 +380,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
 
             if (remainingDepth >= 1)
             {
-                var children = element.FindAllChildren();
-                var visibleChildren = FilterByView(children, view);
+                var visibleChildren = GetChildren(element, walker);
                 int availableBudget = maxNodesBudget - 1; // subtract self
                 childrenCount = Math.Min(availableBudget, visibleChildren.Count);
 
@@ -526,7 +395,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
                     // Each child gets its fair share of the remaining budget
                     int childBudget = availableBudget / childrenCount;
                     var childNode = BuildTree(visibleChildren[i], view, remainingDepth - 1,
-                        childBudget, rootHwnd, childPath, ct);
+                        childBudget, rootHwnd, childPath, walker, ct);
                     if (childNode is not null)
                         node.Children.Add(childNode);
                 }
@@ -564,7 +433,11 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         }
     }
 
-    private TreeNode? BuildSingleNode(AutomationElement element, IntPtr rootHwnd, Locator? existingLocator)
+    private TreeNode? BuildSingleNode(
+        AutomationElement element,
+        IntPtr rootHwnd,
+        Locator? existingLocator,
+        string view)
     {
         try
         {
@@ -592,7 +465,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
             var nodeId = Guid.NewGuid().ToString("N")[..8];
             var rtIdStr = rtId is not null ? string.Join(".", rtId) : "";
 
-            var locator = existingLocator ?? BuildLocator(rootHwnd, element);
+            var locator = existingLocator ?? BuildLocator(rootHwnd, element, view);
 
             return new TreeNode
             {
@@ -635,73 +508,35 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         }
     }
 
-    private Locator BuildLocator(IntPtr rootHwnd, AutomationElement target)
+    private Locator BuildLocator(IntPtr rootHwnd, AutomationElement target, string view)
     {
+        view = NormalizeView(view);
         var segments = new List<LocatorSegment>();
-        var current = target;
+        var root = _automation.FromHandle(rootHwnd);
+        AutomationElement? current = target;
+        var walker = GetWalker(view);
 
-        // Walk up to build the path from root to target
-        while (current is not null)
+        while (current is not null && !current.Equals(root))
         {
-            try
-            {
-                var ctProgName2 = GetControlTypeName(current);
-                var autoId = current.Properties.AutomationId.ValueOrDefault;
-                var name = current.Properties.Name.ValueOrDefault;
-                var cls = current.Properties.ClassName.ValueOrDefault;
-                var ntHwnd = current.Properties.NativeWindowHandle.ValueOrDefault;
+            var parent = walker.GetParent(current)
+                ?? throw new InvalidOperationException("Target is not reachable from the locator root in the selected UIA view.");
+            var siblings = GetChildren(parent, walker);
+            var candidates = ToCandidates(siblings);
+            var targetCandidate = candidates.FirstOrDefault(candidate =>
+                ((AutomationElement)candidate.Value).Equals(current));
+            if (targetCandidate is null)
+                throw new InvalidOperationException("Target is missing from its UIA sibling candidate set.");
 
-                // Stop when we hit the root window
-                if (ntHwnd != IntPtr.Zero && ntHwnd == rootHwnd)
-                    break;
-
-                // Calculate ordinal among siblings matching same conditions
-                var parent = current.Parent;
-                int ordinal = 0;
-                if (parent is not null)
-                {
-                    var siblings = parent.FindAllChildren();
-                    foreach (var sib in siblings)
-                    {
-                        try
-                        {
-                            var sCt = GetControlTypeName(sib);
-                            var sAutoId = sib.Properties.AutomationId.ValueOrDefault;
-                            var sName = sib.Properties.Name.ValueOrDefault;
-                            var sCls = sib.Properties.ClassName.ValueOrDefault;
-
-                            bool matchesConds =
-                                (autoId is null || string.Equals(sAutoId, autoId, StringComparison.OrdinalIgnoreCase)) &&
-                                (name is null || (sName is not null && sName.Contains(name, StringComparison.OrdinalIgnoreCase)));
-
-                            if (sCt == ctProgName2 && matchesConds)
-                            {
-                                if (sib.Equals(current))
-                                    break;
-                                ordinal++;
-                            }
-                        }
-                        catch { }
-                    }
-                }
-
-                segments.Insert(0, new LocatorSegment
-                {
-                    ControlType = StripPrefix(ctProgName2.Length > 0 ? ctProgName2 : "", "ControlType."),
-                    AutomationId = autoId,
-                    Name = name,
-                    ClassName = cls,
-                    Ordinal = ordinal
-                });
-            }
-            catch { }
-
-            try { current = current.Parent; }
-            catch { current = null; }
+            segments.Insert(0, LocatorSegmentMatcher.CreateSegment(candidates, targetCandidate));
+            current = parent;
         }
+
+        if (current is null)
+            throw new InvalidOperationException("Target is not reachable from the locator root in the selected UIA view.");
 
         return new Locator
         {
+            View = view,
             Window = new WindowRef { Hwnd = FormatHwnd(rootHwnd) },
             Path = segments
         };
@@ -713,6 +548,8 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         List<TreeNode> results,
         int maxDepth,
         IntPtr rootHwnd,
+        string view,
+        ITreeWalker walker,
         CancellationToken ct)
     {
         if (maxDepth <= 0 || results.Count >= options.MaxResults) return;
@@ -722,17 +559,16 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         {
             if (MatchesFind(element, options))
             {
-                var node = BuildSingleNode(element, rootHwnd, null);
+                var node = BuildSingleNode(element, rootHwnd, null, view);
                 if (node is not null)
                     results.Add(node);
             }
 
             if (results.Count >= options.MaxResults) return;
 
-            var children = element.FindAllChildren();
-            foreach (var child in children)
+            foreach (var child in GetChildren(element, walker))
             {
-                FindRecursive(child, options, results, maxDepth - 1, rootHwnd, ct);
+                FindRecursive(child, options, results, maxDepth - 1, rootHwnd, view, walker, ct);
             }
         }
         catch { }
@@ -778,27 +614,47 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         }
     }
 
-    private static List<AutomationElement> FilterByView(AutomationElement[] children, string view) => view switch
+    private ITreeWalker GetWalker(string? view) => NormalizeView(view) switch
     {
-        "raw" => new List<AutomationElement>(children),
-        "content" => children.Where(c =>
-        {
-            try { return c.Properties.IsContentElement.ValueOrDefault; }
-            catch { return false; }
-        }).ToList(),
-        _ => children.Where(c => // "control" (default)
-        {
-            try { return c.Properties.IsControlElement.ValueOrDefault; }
-            catch { return false; }
-        }).ToList()
+        "raw" => _automation.TreeWalkerFactory.GetRawViewWalker(),
+        "content" => _automation.TreeWalkerFactory.GetContentViewWalker(),
+        _ => _automation.TreeWalkerFactory.GetControlViewWalker()
     };
+
+    private static string NormalizeView(string? view) => view?.ToLowerInvariant() switch
+    {
+        "raw" => "raw",
+        "content" => "content",
+        _ => "control"
+    };
+
+    private static List<AutomationElement> GetChildren(AutomationElement parent, ITreeWalker walker)
+    {
+        var children = new List<AutomationElement>();
+        var child = walker.GetFirstChild(parent);
+        while (child is not null)
+        {
+            children.Add(child);
+            child = walker.GetNextSibling(child);
+        }
+
+        return children;
+    }
+
+    private static IReadOnlyList<LocatorCandidate> ToCandidates(IEnumerable<AutomationElement> elements) =>
+        elements.Select(element => new LocatorCandidate(
+            GetControlTypeName(element),
+            element.Properties.AutomationId.ValueOrDefault,
+            element.Properties.Name.ValueOrDefault,
+            element.Properties.ClassName.ValueOrDefault,
+            element)).ToList();
 
     private static string? DescribeResolutionMethod(Locator locator)
     {
         if (locator.Path.Count == 0) return "root";
         var last = locator.Path[^1];
-        if (last.AutomationId is not null) return "automation_id";
-        if (last.Name is not null) return "control_type+name";
+        if (!string.IsNullOrWhiteSpace(last.AutomationId)) return "automation_id";
+        if (!string.IsNullOrWhiteSpace(last.Name)) return "control_type+name";
         if (last.ClassName is not null) return "class_name+ordinal";
         return "ordinal";
     }

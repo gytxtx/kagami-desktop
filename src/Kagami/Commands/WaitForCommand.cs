@@ -93,7 +93,8 @@ public class WaitForCommand
         }
         catch (CommandException ex)
         {
-            return writer.Fail(ex.ErrorCode, ex.Message, ex.Retryable, ex.NativeCode, exitCode: ex.ExitCode);
+            return writer.Fail(ex.ErrorCode, ex.Message, ex.Retryable, ex.NativeCode,
+                details: new Dictionary<string, object?>(ex.Details), exitCode: ex.ExitCode);
         }
         catch (Exception ex)
         {

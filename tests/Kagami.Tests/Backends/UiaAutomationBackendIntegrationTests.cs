@@ -74,39 +74,42 @@ public class UiaAutomationBackendIntegrationTests
     }
 
     [Fact]
-    public void ResolveLocator_LocatorRoundTrip_Succeeds()
+    public void ResolveLocator_AllReturnedInteractiveChildren_RoundTripToSameRuntimeId()
     {
-        // Get window + tree
         var windows = _backend.ListWindowsAsync(true, null, null, CancellationToken.None)
             .GetAwaiter().GetResult();
 
-        var target = windows.FirstOrDefault(w => w.Title.Length > 0 && w.Rect.W > 100 && w.Rect.H > 100);
-        if (target is null) return;
+        var trees = windows
+            .Where(w => w.Title.Length > 0 && w.Rect.W > 100 && w.Rect.H > 100)
+            .Select(w => UiaAutomationBackend.ParseHwnd(w.Hwnd))
+            .Where(hwnd => hwnd != IntPtr.Zero)
+            .Select(hwnd => _backend.GetTreeAsync(new GetTreeOptions
+            {
+                Hwnd = hwnd,
+                MaxDepth = 2,
+                MaxNodes = 100,
+                View = "control"
+            }, CancellationToken.None).GetAwaiter().GetResult())
+            .Where(tree => tree is not null)
+            .Cast<TreeNode>()
+            .ToList();
 
-        var hwnd = UiaAutomationBackend.ParseHwnd(target.Hwnd);
-        if (hwnd == IntPtr.Zero) return;
+        var interactiveNodes = trees
+            .SelectMany(Flatten)
+            .Where(node => node.Locator is not null && node.Patterns.Count > 0)
+            .ToList();
 
-        var tree = _backend.GetTreeAsync(new GetTreeOptions
+        Assert.NotEmpty(interactiveNodes);
+        foreach (var node in interactiveNodes)
         {
-            Hwnd = hwnd,
-            MaxDepth = 2,
-            MaxNodes = 50,
-            View = "control"
-        }, CancellationToken.None).GetAwaiter().GetResult();
+            Assert.Equal("control", node.Locator!.View);
 
-        if (tree?.Children.Count == 0 || tree!.Children[0].Locator is null)
-            return; // No children to test with
+            var resolved = _backend.ResolveLocatorAsync(node.Locator, CancellationToken.None)
+                .GetAwaiter().GetResult();
 
-        // Take the locator from the first child
-        var locator = tree.Children[0].Locator!;
-
-        // Resolve it back
-        var resolved = _backend.ResolveLocatorAsync(locator, CancellationToken.None)
-            .GetAwaiter().GetResult();
-
-        Assert.NotNull(resolved);
-        Assert.NotNull(resolved!.Node);
-        Assert.True(resolved.ResolutionMethod.Length > 0);
+            Assert.NotNull(resolved);
+            Assert.Equal(node.RuntimeId, resolved!.Node.RuntimeId);
+        }
     }
 
     [Fact]
@@ -168,5 +171,15 @@ public class UiaAutomationBackendIntegrationTests
     private void Dispose()
     {
         _backend.Dispose();
+    }
+
+    private static IEnumerable<TreeNode> Flatten(TreeNode root)
+    {
+        yield return root;
+        foreach (var child in root.Children)
+        {
+            foreach (var descendant in Flatten(child))
+                yield return descendant;
+        }
     }
 }
