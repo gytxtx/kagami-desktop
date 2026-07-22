@@ -195,7 +195,14 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
 
             var results = new List<TreeNode>();
             var view = NormalizeView(options.View ?? options.StartLocator?.View);
-            FindRecursive(start, options, results, 20, rootHwnd, view, GetWalker(view), ct);
+            var walker = GetWalker(view);
+            var startTreePath = options.StartLocator is null
+                ? ""
+                : GetTreePath(rootHwnd, start, view);
+            if (startTreePath is null)
+                return results;
+
+            FindRecursive(start, options, results, 20, rootHwnd, view, startTreePath, walker, ct);
             return results;
         }, ct);
     }
@@ -547,7 +554,8 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         IntPtr rootHwnd,
         Locator? existingLocator,
         string view,
-        string treePath = "")
+        string treePath = "",
+        bool childrenTruncated = false)
     {
         try
         {
@@ -608,7 +616,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
                 IsVirtualized = isVirtualized,
                 Patterns = patterns,
                 ChildrenCount = 0,
-                ChildrenTruncated = false,
+                ChildrenTruncated = childrenTruncated,
                 Children = new List<TreeNode>(),
                 Locator = locator
             };
@@ -660,6 +668,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         int maxDepth,
         IntPtr rootHwnd,
         string view,
+        string treePath,
         ITreeWalker walker,
         CancellationToken ct)
     {
@@ -668,18 +677,37 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
 
         try
         {
+            var children = GetChildren(element, walker);
             if (MatchesFind(element, options))
             {
-                var node = BuildSingleNode(element, rootHwnd, null, view);
+                var node = BuildSingleNode(
+                    element,
+                    rootHwnd,
+                    null,
+                    view,
+                    treePath,
+                    childrenTruncated: children.Count > 0);
                 if (node is not null)
                     results.Add(node);
             }
 
             if (results.Count >= options.MaxResults) return;
 
-            foreach (var child in GetChildren(element, walker))
+            for (var index = 0; index < children.Count; index++)
             {
-                FindRecursive(child, options, results, maxDepth - 1, rootHwnd, view, walker, ct);
+                var childPath = string.IsNullOrEmpty(treePath)
+                    ? index.ToString()
+                    : $"{treePath}/{index}";
+                FindRecursive(
+                    children[index],
+                    options,
+                    results,
+                    maxDepth - 1,
+                    rootHwnd,
+                    view,
+                    childPath,
+                    walker,
+                    ct);
             }
         }
         catch { }

@@ -174,6 +174,68 @@ public class UiaAutomationBackendIntegrationTests
         Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("control")]
+    [InlineData("content")]
+    [InlineData("raw")]
+    public void Find_NonRootResultTreePath_RoundTripsThroughGetTreePath(string view)
+    {
+        var (hwnd, startNode) = FindNonRootNode(view);
+
+        var result = Assert.Single(_backend.FindAsync(new FindOptions
+        {
+            StartLocator = startNode.Locator,
+            ControlType = startNode.ControlType,
+            MaxResults = 1
+        }, CancellationToken.None).GetAwaiter().GetResult());
+
+        Assert.Equal(startNode.RuntimeId, result.RuntimeId);
+        Assert.False(string.IsNullOrEmpty(result.TreePath));
+        Assert.Equal(startNode.TreePath, result.TreePath);
+
+        var expanded = _backend.GetTreeAsync(new GetTreeOptions
+        {
+            Hwnd = hwnd,
+            Path = result.TreePath,
+            MaxDepth = 0,
+            View = view
+        }, CancellationToken.None).GetAwaiter().GetResult();
+
+        Assert.NotNull(expanded);
+        Assert.Equal(result.RuntimeId, expanded!.RuntimeId);
+        Assert.Equal(result.TreePath, expanded.TreePath);
+    }
+
+    [Fact]
+    public void Find_ContainerResult_MarksOmittedChildrenAsTruncated()
+    {
+        var (_, container) = FindTreeNode(
+            "control",
+            node => node.Children.Count > 0,
+            "non-root container");
+
+        var result = FindStartingNode(container);
+
+        Assert.Equal(0, result.ChildrenCount);
+        Assert.Empty(result.Children);
+        Assert.True(result.ChildrenTruncated);
+    }
+
+    [Fact]
+    public void Find_LeafResult_DoesNotMarkChildrenAsTruncated()
+    {
+        var (_, leaf) = FindTreeNode(
+            "control",
+            node => node.Children.Count == 0 && !node.ChildrenTruncated,
+            "non-root leaf");
+
+        var result = FindStartingNode(leaf);
+
+        Assert.Equal(0, result.ChildrenCount);
+        Assert.Empty(result.Children);
+        Assert.False(result.ChildrenTruncated);
+    }
+
     [Fact]
     public void GetTree_PathRuntimeIdAndLocatorStarts_ReturnSameNodeAndTreePath()
     {
@@ -222,13 +284,7 @@ public class UiaAutomationBackendIntegrationTests
     [InlineData("raw")]
     public void Find_RequestedViewAndMaxResults_AreApplied(string view)
     {
-        var windows = _backend.ListWindowsAsync(true, null, null, CancellationToken.None)
-            .GetAwaiter().GetResult();
-        var target = windows.FirstOrDefault(w => w.Title.Length > 0 && w.Rect.W > 100 && w.Rect.H > 100);
-        if (target is null)
-            return;
-
-        var hwnd = UiaAutomationBackend.ParseHwnd(target.Hwnd);
+        var (hwnd, _) = FindNonRootNode(view);
         var results = _backend.FindAsync(new FindOptions
         {
             Hwnd = hwnd,
@@ -313,6 +369,12 @@ public class UiaAutomationBackendIntegrationTests
     }
 
     private (IntPtr Hwnd, TreeNode Node) FindNonRootNode(string view)
+        => FindTreeNode(view, _ => true, $"non-root {view} UIA node");
+
+    private (IntPtr Hwnd, TreeNode Node) FindTreeNode(
+        string view,
+        Func<TreeNode, bool> predicate,
+        string description)
     {
         var windows = _backend.ListWindowsAsync(true, null, null, CancellationToken.None)
             .GetAwaiter().GetResult();
@@ -326,18 +388,28 @@ public class UiaAutomationBackendIntegrationTests
             var tree = _backend.GetTreeAsync(new GetTreeOptions
             {
                 Hwnd = hwnd,
-                MaxDepth = 2,
-                MaxNodes = 100,
+                MaxDepth = 3,
+                MaxNodes = 300,
                 View = view
             }, CancellationToken.None).GetAwaiter().GetResult();
             var node = tree is null
                 ? null
                 : Flatten(tree).FirstOrDefault(candidate =>
-                    candidate.Locator is not null && candidate.Locator.Path.Count > 0);
+                    candidate.Locator is not null &&
+                    candidate.Locator.Path.Count > 0 &&
+                    predicate(candidate));
             if (node is not null)
                 return (hwnd, node);
         }
 
-        throw new Xunit.Sdk.XunitException($"No non-root {view} UIA node was available for integration testing.");
+        throw new Xunit.Sdk.XunitException($"No {description} was available for integration testing.");
     }
+
+    private TreeNode FindStartingNode(TreeNode startNode) => Assert.Single(
+        _backend.FindAsync(new FindOptions
+        {
+            StartLocator = startNode.Locator,
+            ControlType = startNode.ControlType,
+            MaxResults = 1
+        }, CancellationToken.None).GetAwaiter().GetResult());
 }
