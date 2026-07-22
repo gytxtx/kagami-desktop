@@ -143,9 +143,12 @@ class Program
         var xOpt = new Option<int>("--x") { IsRequired = true };
         var yOpt = new Option<int>("--y") { IsRequired = true };
         var rightOpt = new Option<bool>("--right");
+        var hwndOpt = new Option<string?>("--hwnd");
         var guardOpt = new Option<string?>("--expected-state");
-        var c = new Command("click") { xOpt, yOpt, rightOpt, guardOpt };
-        c.SetHandler((x, y, r, g) => cmds.ClickAsync(x, y, r, g), xOpt, yOpt, rightOpt, guardOpt);
+        var c = new Command("click") { xOpt, yOpt, rightOpt, hwndOpt, guardOpt };
+        c.SetHandler(
+            (x, y, r, h, g) => cmds.ClickAsync(x, y, r, h, g),
+            xOpt, yOpt, rightOpt, hwndOpt, guardOpt);
         return c;
     }
 

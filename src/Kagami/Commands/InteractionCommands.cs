@@ -78,20 +78,49 @@ public class InteractionCommands
         }
     }
 
-    public async Task<int> ClickAsync(int x, int y, bool rightButton, string? expectedStatePath)
+    public async Task<int> ClickAsync(
+        int x,
+        int y,
+        bool rightButton,
+        string? hwndStr,
+        string? expectedStatePath)
     {
         var writer = new ResponseWriter("click");
 
         try
         {
+            ObservationGuard? guard = null;
             if (expectedStatePath is not null)
             {
                 var guardResult = await _guardStore.LoadAndValidateAsync(expectedStatePath, CancellationToken.None);
                 if (!guardResult.Valid)
                     return writer.Fail(guardResult.FailureCode!, guardResult.FailureMessage!);
+
+                guard = guardResult.Guard
+                    ?? throw new CommandException(
+                        ErrorCodes.StaleObservation,
+                        "Validated guard did not include target window metadata.");
             }
 
-            var result = await _input.ClickAsync(x, y, rightButton, CancellationToken.None);
+            var explicitHwnd = ParseOptionalHwnd(hwndStr);
+            IntPtr? guardHwnd = guard is null ? null : ParseRequiredHwnd(guard.Hwnd, "guard HWND");
+
+            if (explicitHwnd.HasValue && guardHwnd.HasValue && explicitHwnd.Value != guardHwnd.Value)
+            {
+                return writer.Fail(
+                    ErrorCodes.StaleObservation,
+                    $"Explicit HWND {FormatHwnd(explicitHwnd.Value)} does not match guard HWND {FormatHwnd(guardHwnd.Value)}.");
+            }
+
+            var targetHwnd = explicitHwnd ?? guardHwnd;
+            if (!targetHwnd.HasValue)
+            {
+                return writer.Fail(
+                    ErrorCodes.InvalidArgument,
+                    "A target HWND or validated observation guard is required for physical click.");
+            }
+
+            var result = await _input.ClickAsync(targetHwnd.Value, x, y, rightButton, CancellationToken.None);
             return writer.Success(result);
         }
         catch (CommandException ex)
@@ -131,7 +160,14 @@ public class InteractionCommands
 
             IntPtr? hwnd = null;
             if (hwndStr is not null)
-                hwnd = ParseHwnd(hwndStr);
+                hwnd = ParseRequiredHwnd(hwndStr, "HWND");
+
+            if (interactionMode == InteractionMode.Physical && !hwnd.HasValue)
+            {
+                return writer.Fail(
+                    ErrorCodes.InvalidArgument,
+                    "A target HWND is required for keyboard text input.");
+            }
 
             var options = new TypeTextOptions
             {
@@ -168,9 +204,10 @@ public class InteractionCommands
                     return writer.Fail(guardResult.FailureCode!, guardResult.FailureMessage!);
             }
 
-            IntPtr? hwnd = null;
-            if (hwndStr is not null)
-                hwnd = ParseHwnd(hwndStr);
+            if (hwndStr is null)
+                return writer.Fail(ErrorCodes.InvalidArgument, "A target HWND is required for physical key input.");
+
+            var hwnd = ParseRequiredHwnd(hwndStr, "HWND");
 
             var options = new KeyOptions
             {
@@ -201,4 +238,18 @@ public class InteractionCommands
 
         return IntPtr.Zero;
     }
+
+    private static IntPtr? ParseOptionalHwnd(string? hwndStr) =>
+        hwndStr is null ? null : ParseRequiredHwnd(hwndStr, "HWND");
+
+    private static IntPtr ParseRequiredHwnd(string hwndStr, string description)
+    {
+        var hwnd = ParseHwnd(hwndStr);
+        if (hwnd == IntPtr.Zero)
+            throw new CommandException(ErrorCodes.InvalidArgument, $"Invalid {description}: {hwndStr}");
+
+        return hwnd;
+    }
+
+    private static string FormatHwnd(IntPtr hwnd) => $"0x{hwnd:x}";
 }

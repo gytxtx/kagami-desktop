@@ -226,7 +226,7 @@ public class TempFileObservationGuardStore : IObservationGuardStore
             }
         }
 
-        return Task.FromResult(new GuardValidationResult { Valid = true });
+        return Task.FromResult(new GuardValidationResult { Valid = true, Guard = guard });
     }
 
     public Task CleanupExpiredAsync(CancellationToken ct)

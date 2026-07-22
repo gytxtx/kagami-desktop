@@ -97,4 +97,21 @@ public class DataTypesTests
         Assert.Contains("\"fallback_used\":true", json);
         Assert.Contains("\"occlusion_possible\":true", json);
     }
+
+    [Fact]
+    public void InteractionResult_Serialization_IncludesTargetVerificationFields()
+    {
+        var interaction = new InteractionResult
+        {
+            TargetHwnd = "0x1234",
+            TargetForegroundVerified = true,
+            TargetDeliveryVerified = true
+        };
+
+        var json = JsonSerializer.Serialize(interaction, JsonConfig.Options);
+
+        Assert.Contains("\"target_hwnd\":\"0x1234\"", json);
+        Assert.Contains("\"target_foreground_verified\":true", json);
+        Assert.Contains("\"target_delivery_verified\":true", json);
+    }
 }

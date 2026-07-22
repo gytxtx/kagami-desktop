@@ -57,7 +57,12 @@ public interface IInputBackend
     Task<InvokeResult> InvokeAsync(Locator locator, CancellationToken ct);
 
     /// <summary>Perform a physical mouse click at screen coordinates.</summary>
-    Task<ClickResult> ClickAsync(int x, int y, bool rightButton, CancellationToken ct);
+    Task<ClickResult> ClickAsync(
+        IntPtr targetHwnd,
+        int x,
+        int y,
+        bool rightButton,
+        CancellationToken ct);
 
     /// <summary>Type text using the specified mode.</summary>
     Task<TypeTextResult> TypeTextAsync(TypeTextOptions options, CancellationToken ct);
