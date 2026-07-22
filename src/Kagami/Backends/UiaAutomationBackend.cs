@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using Kagami.Protocol;
 using Kagami.Utilities;
 using FlaUI.Core;
@@ -26,8 +25,6 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         return Task.Run(() =>
         {
             var results = new List<WindowInfo>();
-            var foreground = NativeMethods.GetForegroundWindow();
-
             // Use FlaUI's desktop root to enumerate top-level windows for better property access
             var desktop = _automation.GetDesktop();
             var windows = desktop.FindAllChildren(cf => cf.ByControlType(ControlType.Window));
@@ -41,43 +38,20 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
                     var hwnd = window.Properties.NativeWindowHandle.ValueOrDefault;
                     if (hwnd == IntPtr.Zero) continue;
 
-                    var isVisible = NativeMethods.IsWindowVisible(hwnd);
-                    var isMinimized = NativeMethods.IsIconic(hwnd);
+                    var windowInfo = WindowInfoReader.Read(hwnd);
 
-                    if (visibleOnly && (!isVisible || isMinimized))
+                    if (visibleOnly && (!windowInfo.Visible || windowInfo.Minimized))
                         continue;
 
-                    uint pid;
-                    NativeMethods.GetWindowThreadProcessId(hwnd, out pid);
-
-                    var procName = ProcessHelper.GetProcessName((int)pid) ?? "";
-
-                    if (processName is not null && !procName.Equals(processName, StringComparison.OrdinalIgnoreCase))
+                    if (processName is not null &&
+                        !ProcessNameMatcher.EqualsIgnoringExe(processName, windowInfo.ProcessName))
                         continue;
 
-                    var windowTitle = window.Properties.Name.ValueOrDefault ?? "";
-                    if (title is not null && !windowTitle.Contains(title, StringComparison.OrdinalIgnoreCase))
+                    if (title is not null &&
+                        !windowInfo.Title.Contains(title, StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    var rect = GetExtendedFrameBounds(hwnd);
-
-                    var isCloaked = false;
-                    NativeMethods.DwmGetWindowAttribute(hwnd, NativeMethods.DWMWA_CLOAKED, out bool cloakedBool, 4);
-                    isCloaked = cloakedBool;
-
-                    results.Add(new WindowInfo
-                    {
-                        Hwnd = FormatHwnd(hwnd),
-                        Pid = (int)pid,
-                        ProcessName = procName,
-                        Title = windowTitle,
-                        ClassName = window.Properties.ClassName.ValueOrDefault ?? "",
-                        Visible = isVisible,
-                        Cloaked = isCloaked,
-                        Minimized = isMinimized,
-                        Foreground = hwnd == foreground,
-                        Rect = rect
-                    });
+                    results.Add(windowInfo);
                 }
                 catch
                 {
@@ -314,26 +288,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
     /// Falls back to GetWindowRect if DWM call fails.
     /// </summary>
     public static Rect GetExtendedFrameBounds(IntPtr hwnd)
-    {
-        int hr = NativeMethods.DwmGetWindowAttribute(
-            hwnd,
-            NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS,
-            out RECT rect,
-            Marshal.SizeOf<RECT>());
-
-        if (hr != 0)
-        {
-            NativeMethods.GetWindowRect(hwnd, out rect);
-        }
-
-        return new Rect
-        {
-            X = rect.Left,
-            Y = rect.Top,
-            W = rect.Right - rect.Left,
-            H = rect.Bottom - rect.Top
-        };
-    }
+        => WindowInfoReader.GetExtendedFrameBounds(hwnd);
 
     public static string FormatHwnd(IntPtr hwnd) =>
         $"0x{hwnd:x}";

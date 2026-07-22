@@ -152,23 +152,7 @@ public class ObserveCommand
             var foregroundHwnd = NativeMethods.GetForegroundWindow();
 
             // Step 9: Window info
-            uint pid;
-            NativeMethods.GetWindowThreadProcessId(hwnd, out pid);
-            var procName = ProcessHelper.GetProcessName((int)pid) ?? "";
-
-            var windowInfo = new WindowInfo
-            {
-                Hwnd = UiaAutomationBackend.FormatHwnd(hwnd),
-                Pid = (int)pid,
-                ProcessName = procName,
-                Title = "", // Filled from tree root
-                ClassName = "",
-                Visible = true,
-                Cloaked = false,
-                Minimized = false,
-                Foreground = hwnd == foregroundHwnd,
-                Rect = rectAfter
-            };
+            var windowInfo = WindowInfoReader.Read(hwnd);
 
             var observationData = new ObservationData
             {

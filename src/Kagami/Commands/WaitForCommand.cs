@@ -108,7 +108,7 @@ public class WaitForCommand
         {
             var windows = await _automation.ListWindowsAsync(true, null, null, ct);
             var found = windows.Any(w =>
-                (processName is null || w.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase)) &&
+                (processName is null || ProcessNameMatcher.EqualsIgnoringExe(processName, w.ProcessName)) &&
                 (title is null || w.Title.Contains(title, StringComparison.OrdinalIgnoreCase)));
 
             if (found) return;

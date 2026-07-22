@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Kagami.Backends;
 using Kagami.Commands;
+using Kagami.Protocol;
 
 namespace Kagami;
 
@@ -15,6 +16,17 @@ class Program
         using var input = new Win32InputBackend(automation, guardStore);
         var capture = new CaptureService();
 
+        var rootCommand = BuildRootCommand(automation, input, capture, guardStore);
+
+        return await InvokeAsync(rootCommand, args);
+    }
+
+    internal static RootCommand BuildRootCommand(
+        IAutomationBackend automation,
+        IInputBackend input,
+        CaptureService capture,
+        IObservationGuardStore guardStore)
+    {
         var rootCommand = new RootCommand("Kagami — AI Agent Windows Desktop Observation and Action Protocol");
 
         rootCommand.AddCommand(CreateCapabilitiesCommand(new CapabilitiesCommand(capture)));
@@ -32,7 +44,23 @@ class Program
         rootCommand.AddCommand(CreateKeyCommand(interactionCmds));
         rootCommand.AddCommand(CreateWaitForCommand(new WaitForCommand(automation, capture)));
 
-        return await rootCommand.InvokeAsync(args);
+        return rootCommand;
+    }
+
+    internal static async Task<int> InvokeAsync(RootCommand rootCommand, string[] args)
+    {
+        var parseResult = rootCommand.Parse(args);
+        if (parseResult.Errors.Count == 0)
+            return await rootCommand.InvokeAsync(args);
+
+        foreach (var error in parseResult.Errors)
+            Console.Error.WriteLine(error.Message);
+        Console.Error.Flush();
+
+        return new ResponseWriter("parse").Fail(
+            ErrorCodes.InvalidArgument,
+            "Command line arguments could not be parsed.",
+            exitCode: 2);
     }
 
     // ── capabilities ──
@@ -223,7 +251,8 @@ class Program
     // ── wait-for ──
     static Command CreateWaitForCommand(WaitForCommand cmd)
     {
-        var condOpt = new Option<string>("--condition") { IsRequired = true };
+        var condArg = new Argument<string?>("condition") { Arity = ArgumentArity.ZeroOrOne };
+        var condOpt = new Option<string?>("--condition");
         var hwndOpt = new Option<string?>("--hwnd");
         var procOpt = new Option<string?>("--process");
         var titleOpt = new Option<string?>("--title");
@@ -236,13 +265,22 @@ class Program
         var thrOpt = new Option<double>("--threshold", () => 0.95);
         var regOpt = new Option<string?>("--region");
         var guardOpt = new Option<string?>("--expected-state");
-        var c = new Command("wait-for") { condOpt, hwndOpt, procOpt, titleOpt, locOpt, propOpt, eqOpt,
+        var c = new Command("wait-for") { condArg, condOpt, hwndOpt, procOpt, titleOpt, locOpt, propOpt, eqOpt,
             toOpt, piOpt, consOpt, thrOpt, regOpt, guardOpt };
 
         c.SetHandler(
             ctx =>
             {
-                var cond = ctx.ParseResult.GetValueForOption(condOpt) ?? "";
+                var conditionArgument = ctx.ParseResult.GetValueForArgument(condArg);
+                var conditionOption = ctx.ParseResult.GetValueForOption(condOpt);
+                var condition = ResolveCondition(conditionArgument, conditionOption, out var conditionError);
+                if (conditionError is not null)
+                {
+                    return Task.FromResult(new ResponseWriter("wait-for").Fail(
+                        ErrorCodes.InvalidArgument,
+                        conditionError));
+                }
+
                 var hwnd = ctx.ParseResult.GetValueForOption(hwndOpt);
                 var proc = ctx.ParseResult.GetValueForOption(procOpt);
                 var title = ctx.ParseResult.GetValueForOption(titleOpt);
@@ -255,9 +293,29 @@ class Program
                 var thr = ctx.ParseResult.GetValueForOption(thrOpt);
                 var reg = ctx.ParseResult.GetValueForOption(regOpt);
                 var guard = ctx.ParseResult.GetValueForOption(guardOpt);
-                return cmd.RunAsync(cond, hwnd, proc, title, loc, prop, eq, to, pi, cons, thr, reg, guard);
+                return cmd.RunAsync(condition!, hwnd, proc, title, loc, prop, eq, to, pi, cons, thr, reg, guard);
             });
 
         return c;
+    }
+
+    private static string? ResolveCondition(
+        string? conditionArgument,
+        string? conditionOption,
+        out string? error)
+    {
+        if (conditionArgument is not null &&
+            conditionOption is not null &&
+            !string.Equals(conditionArgument, conditionOption, StringComparison.OrdinalIgnoreCase))
+        {
+            error = $"Conflicting wait-for conditions: '{conditionArgument}' and '{conditionOption}'.";
+            return null;
+        }
+
+        var condition = conditionArgument ?? conditionOption;
+        error = condition is null
+            ? "A wait-for condition is required as a positional argument or via --condition."
+            : null;
+        return condition;
     }
 }
