@@ -10,6 +10,48 @@ namespace Kagami.Tests.Commands;
 public class CommandLineContractTests
 {
     [Theory]
+    [InlineData("--help")]
+    [InlineData("-h")]
+    [InlineData("/h")]
+    [InlineData("-?")]
+    [InlineData("/?")]
+    public async Task RootHelpAliases_UseDefaultHelpPipeline(string helpAlias)
+    {
+        var result = await InvokeCli(helpAlias);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Kagami", result.Stdout);
+        Assert.Contains("get-tree", result.Stdout);
+        Assert.Contains("--help", result.Stdout);
+        Assert.DoesNotContain("\"command\":\"parse\"", result.Stdout);
+        Assert.True(string.IsNullOrWhiteSpace(result.Stderr), result.Stderr);
+    }
+
+    [Fact]
+    public async Task SubcommandHelp_DoesNotRequireOperationalArguments()
+    {
+        var result = await InvokeCli("get-tree", "--help");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("get-tree", result.Stdout);
+        Assert.Contains("--hwnd", result.Stdout);
+        Assert.Contains("--runtime-id", result.Stdout);
+        Assert.DoesNotContain("\"command\":\"parse\"", result.Stdout);
+        Assert.True(string.IsNullOrWhiteSpace(result.Stderr), result.Stderr);
+    }
+
+    [Fact]
+    public async Task Version_UsesDefaultVersionPipeline()
+    {
+        var result = await InvokeCli("--version");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Matches(@"^\d+\.\d+\.\d+", result.Stdout.Trim());
+        Assert.DoesNotContain("\"command\":\"parse\"", result.Stdout);
+        Assert.True(string.IsNullOrWhiteSpace(result.Stderr), result.Stderr);
+    }
+
+    [Theory]
     [InlineData("wait-for", "element", "--locator", "{}")]
     [InlineData("wait-for", "--condition", "element", "--locator", "{}")]
     [InlineData("wait-for", "element", "--condition", "element", "--locator", "{}")]

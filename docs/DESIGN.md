@@ -38,11 +38,11 @@ Kagami Desktop 是一个 CLI 工具，为 AI Agent 提供 Windows 桌面的"眼�
 
 | 模式 | 说明 | 后端 |
 |---|---|---|
-| `window` | 捕获单个窗口表面（即使被遮挡） | legacy_window_capture（PrintWindow → DWM Thumbnail） |
-
-> **当前状态：** WGC (`CreateForWindow`) 尚未实现。MVP 使用 `legacy_window_capture` 后端（PrintWindow + DWM Thumbnail + GDI fallback）。每次捕获的结果报告 `capture_backend` 和 `capture_method` 以透明区分实际使用的技术。
+| `window` | 请求捕获单个窗口表面 | legacy_window_capture（PrintWindow → DWM Thumbnail） |
 | `visible-desktop` | 捕获桌面合成帧上指定区域 | DXGI Desktop Duplication |
 | `auto` | 优先 `window`，失败时按策略降级 | 自动选择 |
+
+> **当前状态：** WGC (`CreateForWindow`) 尚未实现。MVP 使用 `legacy_window_capture` 后端（PrintWindow + DWM Thumbnail + GDI fallback）。每次捕获的结果报告 `capture_backend` 和 `capture_method` 以透明区分实际使用的技术。
 
 跨后端的语义降级（`window` → `visible-desktop`）默认关闭，需 `--allow-semantic-fallback` 显式允许。`legacy_window_capture` 内部仍可在 PrintWindow/DWM 失败后退化为可见桌面裁剪；该结果报告 `actual_mode = visible-desktop-crop`、`fallback_used = true`、`occlusion_possible = true`，所以 `window` 请求不等于无条件保证无遮挡。
 返回 `actual_mode`、`capture_backend`、`fallback_used`、`occlusion_possible`。
@@ -84,7 +84,7 @@ One-shot CLI 的跨调用状态一致性通过 guard 文件实现。
 }
 ```
 
-后续命令 `--expected-state guard-uuid.json` 传入。执行前验证：
+状态变更命令 `invoke`、`click`、`type-text`、`key` 支持 `--expected-state`，以 `--expected-state guard-uuid.json` 传入；观察型 `wait-for` 也接受该 option，`activate` 不接受。使用 guard 的命令在继续前验证：
 - HWND 仍然存在
 - PID 匹配且进程启动时间一致（防止 PID 复用）
 - 窗口矩形未显著变化
@@ -146,6 +146,8 @@ key             — 组合键输入
 
 wait-for        — 条件等待（element/element-gone/property/window/window-rect-stable/screenshot-stable）
 ```
+
+根命令和子命令通过 `--help` 输出实际语法；默认 help 别名为 `-h`、`/h`、`-?`、`/?`，`--version` 输出程序集版本。help/version 成功时退出码为 0。
 
 推迟到 post-MVP：`focus`、`scroll`、`cleanup`。
 
@@ -354,6 +356,7 @@ wait-for screenshot-stable --hwnd X [--region x,y,w,h] [--threshold 0.95] [--con
 - stdout → 成功和失败均为单个 JSON 文档
 - stderr → 日志和 traceback（`--verbose` 时）
 - 命令行解析错误 → 单个 JSON 错误响应，退出码 2
+- `--help` / `--version` → 面向人的文本输出，退出码 0，不使用 JSON envelope
 - 图片 → 临时文件路径（`%TEMP%\kagami\screenshots\<uuid>.png`，每次调用清理 5 分钟以上的旧文件）
 
 ## 架构抽象层

@@ -2,6 +2,7 @@
 
 ## Standard flow
 
+<!-- kagami-command-contract -->
 ```powershell
 kagami capabilities
 kagami list-windows --title "Cafe Launcher"
@@ -15,6 +16,7 @@ kagami observe --hwnd 0x607fc --depth 1
 
 Physical verification:
 
+<!-- kagami-command-contract -->
 ```powershell
 kagami click --hwnd 0x607fc --x 840 --y 560 --expected-state "C:\...\guard.json"
 kagami type-text --text "hello" --mode keyboard --hwnd 0x607fc --expected-state "C:\...\guard.json"
@@ -25,6 +27,7 @@ kagami key --keys "CTRL+L" --hwnd 0x607fc --expected-state "C:\...\guard.json"
 
 Capture examples:
 
+<!-- kagami-command-contract -->
 ```powershell
 kagami screenshot --hwnd 0x607fc --mode window
 kagami screenshot --hwnd 0x607fc --mode auto --allow-semantic-fallback
@@ -62,6 +65,7 @@ Refresh the tree on `LOCATOR_NOT_FOUND`. Refine the locator from returned candid
 
 Prefer a cheap `find` before expanding a large tree:
 
+<!-- kagami-command-contract -->
 ```powershell
 kagami find --hwnd 0x607fc --automation-id "BtnLogin" --max-results 20 --view control
 kagami get-tree --hwnd 0x607fc --runtime-id "42.5678" --depth 1
@@ -75,16 +79,18 @@ UIA `is_offscreen` is a provider signal, not proof that pixels are visually visi
 
 ## Guards and waits
 
-Observation guards have a 120 秒 maximum TTL, but age alone cannot prove the UI is unchanged. Take a fresh observation immediately before every state-changing action, pass its guard, and refresh on `STALE_OBSERVATION`.
+Observation guards have a 120 秒 maximum TTL, but age alone cannot prove the UI is unchanged. For state-changing commands that expose `--expected-state` (`invoke`, `click`, `type-text`, and `key`), take a fresh observation immediately before acting, pass its guard, and refresh on `STALE_OBSERVATION`. `activate` does not accept a guard; observational `wait-for` does.
 
 The positional condition is preferred:
 
+<!-- kagami-command-contract -->
 ```powershell
 kagami wait-for element --hwnd 0x607fc --locator '{...}' --timeout 10000
 ```
 
 The option form remains compatible for existing callers:
 
+<!-- kagami-command-contract -->
 ```powershell
 kagami wait-for --condition element --hwnd 0x607fc --locator '{...}' --timeout 10000
 ```
@@ -111,3 +117,4 @@ Branch on `error.code`, not message text.
 - exit `0`: success
 - exit `1`: expected operation failure
 - exit `2`: protocol/internal failure; a command-line parse error is also JSON and uses 退出码 2
+- `--help` (`-h`, `/h`, `-?`, `/?`) and `--version`: human-readable text, exit `0`

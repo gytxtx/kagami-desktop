@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.CommandLine.Parsing;
 using System.Text.RegularExpressions;
 using Kagami.Backends;
 
@@ -6,6 +7,8 @@ namespace Kagami.Tests.Documentation;
 
 public sealed class DocumentationContractTests
 {
+    private const string CommandContractMarker = "<!-- kagami-command-contract -->";
+
     private static readonly string[] DocumentPaths =
     {
         "README.md",
@@ -26,12 +29,8 @@ public sealed class DocumentationContractTests
     [Fact]
     public void AgentFacingExamples_UseSafeCurrentCommandSyntax()
     {
-        var commandLines = AgentFacingDocumentPaths
-            .SelectMany(path => ReadDocument(path).Split('\n'))
-            .Select(line => line.Trim())
-            .Where(line => line.StartsWith("kagami ", StringComparison.Ordinal))
-            .ToList();
-        var commands = string.Join('\n', commandLines);
+        var examples = ReadCommandContractExamples();
+        var commands = string.Join('\n', examples.Select(example => example.CommandLine));
 
         Assert.Contains("kagami click --hwnd", commands);
         Assert.Contains("kagami key --keys", commands);
@@ -40,11 +39,31 @@ public sealed class DocumentationContractTests
         Assert.Contains("kagami get-tree --hwnd", commands);
         Assert.Contains("kagami find --hwnd", commands);
 
-        AssertPhysicalCommandsHaveTarget(commandLines, "kagami click ");
-        AssertPhysicalCommandsHaveTarget(commandLines, "kagami key ");
-        AssertPhysicalCommandsHaveTarget(
-            commandLines.Where(line => line.Contains("--mode keyboard", StringComparison.Ordinal)),
-            "kagami type-text ");
+        var clickExamples = examples.Where(example => example.Args[0] == "click").ToList();
+        Assert.NotEmpty(clickExamples);
+        Assert.All(clickExamples, example => Assert.True(
+            HasOptionValue(example.Args, "--hwnd") ||
+            HasOptionValue(example.Args, "--expected-state"),
+            $"Click example must bind a target HWND or a non-empty guard: {example.CommandLine}"));
+
+        var keyExamples = examples.Where(example => example.Args[0] == "key").ToList();
+        Assert.NotEmpty(keyExamples);
+        Assert.All(keyExamples, example => Assert.True(
+            HasOptionValue(example.Args, "--hwnd"),
+            $"Key example must bind an explicit HWND; guard-only is unsafe: {example.CommandLine}"));
+
+        var physicalTypingExamples = examples
+            .Where(example =>
+                example.Args[0] == "type-text" &&
+                string.Equals(
+                    GetOptionValue(example.Args, "--mode"),
+                    "keyboard",
+                    StringComparison.Ordinal))
+            .ToList();
+        Assert.NotEmpty(physicalTypingExamples);
+        Assert.All(physicalTypingExamples, example => Assert.True(
+            HasOptionValue(example.Args, "--hwnd"),
+            $"Physical typing example must bind an explicit HWND; guard-only is unsafe: {example.CommandLine}"));
     }
 
     [Fact]
@@ -106,51 +125,101 @@ public sealed class DocumentationContractTests
             null!,
             new CaptureService(Array.Empty<ICaptureBackend>()),
             null!);
-        var examples = new Dictionary<string, string[]>
-        {
-            ["safe click"] =
-                ["click", "--hwnd", "0x607fc", "--x", "840", "--y", "560", "--expected-state", "guard.json"],
-            ["safe key"] =
-                ["key", "--keys", "CTRL+L", "--hwnd", "0x607fc", "--expected-state", "guard.json"],
-            ["physical typing"] =
-                ["type-text", "--text", "hello", "--mode", "keyboard", "--hwnd", "0x607fc"],
-            ["preferred wait"] =
-                ["wait-for", "element", "--hwnd", "0x607fc", "--locator", "{}"],
-            ["compatible wait"] =
-                ["wait-for", "--condition", "element", "--hwnd", "0x607fc", "--locator", "{}"],
-            ["find"] =
-                ["find", "--hwnd", "0x607fc", "--control-type", "Button", "--name", "Login", "--max-results", "20"],
-            ["runtime-id subtree"] =
-                ["get-tree", "--hwnd", "0x607fc", "--runtime-id", "42.5678", "--depth", "1"],
-            ["locator subtree"] =
-                ["get-tree", "--hwnd", "0x607fc", "--locator", "{}", "--depth", "1"],
-            ["compact interactive tree"] =
-                ["get-tree", "--hwnd", "0x607fc", "--interactive-only", "--include-locators", "interactive"]
-        };
+        var examples = ReadCommandContractExamples();
 
-        foreach (var (name, args) in examples)
+        Assert.NotEmpty(examples);
+        Assert.All(AgentFacingDocumentPaths, path => Assert.Contains(
+            examples,
+            example => string.Equals(example.DocumentPath, path, StringComparison.Ordinal)));
+
+        foreach (var example in examples)
         {
-            var parseResult = rootCommand.Parse(args);
+            var parseResult = rootCommand.Parse(example.Args);
             Assert.True(
                 parseResult.Errors.Count == 0,
-                $"Documented {name} example no longer parses: " +
+                $"Documented example in {example.DocumentPath} no longer parses: " +
+                $"{example.CommandLine}. " +
                 string.Join("; ", parseResult.Errors.Select(error => error.Message)));
         }
     }
 
-    private static void AssertPhysicalCommandsHaveTarget(
-        IEnumerable<string> commandLines,
-        string prefix)
+    [Fact]
+    public void CaptureGuardAndCommandIndex_AvoidSemanticOverclaims()
     {
-        var physicalCommands = commandLines
-            .Where(line => line.StartsWith(prefix, StringComparison.Ordinal))
-            .ToList();
+        var readme = ReadDocument("README.md");
+        var skill = ReadDocument("SKILL.md");
+        var design = ReadDocument("docs/DESIGN.md");
 
-        Assert.NotEmpty(physicalCommands);
-        Assert.All(physicalCommands, line => Assert.True(
-            line.Contains("--hwnd", StringComparison.Ordinal) ||
-            line.Contains("--expected-state", StringComparison.Ordinal),
-            $"Physical input example must bind a target HWND directly or through a validated guard: {line}"));
+        Assert.Contains("`actual_mode: \"window\"`", readme);
+        Assert.Contains("`actual_mode: \"visible-desktop-crop\"` 时可能被遮挡", readme);
+        Assert.DoesNotContain("| `window` | legacy_window_capture (PrintWindow → DWM Thumbnail) | **无** |", readme);
+        Assert.DoesNotContain("捕获单个窗口表面（即使被遮挡）", design);
+
+        Assert.Contains(
+            "For supported state-changing commands (`invoke`, `click`, `type-text`, and `key`)",
+            skill);
+        Assert.DoesNotContain(
+            "Pass the newest `--expected-state <guard_path>` to state-changing commands.",
+            skill);
+        Assert.Contains(
+            "状态变更命令 `invoke`、`click`、`type-text`、`key` 支持 `--expected-state`",
+            design);
+        Assert.DoesNotContain("后续命令 `--expected-state guard-uuid.json` 传入", design);
+
+        Assert.Contains("## 命令索引（语法）", readme);
+        Assert.Contains("`kagami invoke --locator <LOCATOR_JSON>`", readme);
+        Assert.Contains(
+            "`kagami type-text --text <TEXT> --mode keyboard --hwnd <HWND>`",
+            readme);
+        Assert.Contains(
+            "`kagami wait-for element --locator <LOCATOR_JSON>`",
+            readme);
+    }
+
+    private static IReadOnlyList<CommandContractExample> ReadCommandContractExamples()
+    {
+        var examples = new List<CommandContractExample>();
+
+        foreach (var path in AgentFacingDocumentPaths)
+        {
+            var document = ReadDocument(path);
+            var matches = Regex.Matches(
+                document,
+                $@"{Regex.Escape(CommandContractMarker)}\s*```powershell\s*(?<body>.*?)```",
+                RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+            foreach (Match match in matches)
+            {
+                var commands = match.Groups["body"].Value
+                    .Split('\n')
+                    .Select(line => Regex.Replace(line.Trim(), @"\s+#.*$", ""))
+                    .Where(line => line.StartsWith("kagami ", StringComparison.Ordinal));
+
+                foreach (var command in commands)
+                {
+                    var args = CommandLineStringSplitter.Instance
+                        .Split(command["kagami ".Length..])
+                        .ToArray();
+                    examples.Add(new CommandContractExample(path, command, args));
+                }
+            }
+        }
+
+        return examples;
+    }
+
+    private static bool HasOptionValue(IReadOnlyList<string> args, string option) =>
+        GetOptionValue(args, option) is not null;
+
+    private static string? GetOptionValue(IReadOnlyList<string> args, string option)
+    {
+        for (var index = 0; index < args.Count - 1; index++)
+        {
+            if (string.Equals(args[index], option, StringComparison.Ordinal))
+                return args[index + 1];
+        }
+
+        return null;
     }
 
     private static string ReadAllDocuments() =>
@@ -179,4 +248,9 @@ public sealed class DocumentationContractTests
 
         throw new DirectoryNotFoundException("Could not locate the kagami-desktop repository root.");
     }
+
+    private sealed record CommandContractExample(
+        string DocumentPath,
+        string CommandLine,
+        string[] Args);
 }

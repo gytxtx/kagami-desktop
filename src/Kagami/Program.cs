@@ -1,4 +1,7 @@
 using System.CommandLine;
+using System.CommandLine.Builder;
+using System.CommandLine.Invocation;
+using System.CommandLine.Parsing;
 using Kagami.Backends;
 using Kagami.Commands;
 using Kagami.Protocol;
@@ -56,18 +59,36 @@ class Program
 
     internal static async Task<int> InvokeAsync(RootCommand rootCommand, string[] args)
     {
-        var parseResult = rootCommand.Parse(args);
-        if (parseResult.Errors.Count == 0)
-            return await rootCommand.InvokeAsync(args);
+        var parser = new CommandLineBuilder(rootCommand)
+            .UseVersionOption()
+            .UseHelp()
+            .UseEnvironmentVariableDirective()
+            .UseParseDirective()
+            .UseSuggestDirective()
+            .RegisterWithDotnetSuggest()
+            .UseTypoCorrections()
+            .AddMiddleware(async (context, next) =>
+            {
+                if (context.ParseResult.Errors.Count == 0)
+                {
+                    await next(context);
+                    return;
+                }
 
-        foreach (var error in parseResult.Errors)
-            Console.Error.WriteLine(error.Message);
-        Console.Error.Flush();
+                foreach (var error in context.ParseResult.Errors)
+                    Console.Error.WriteLine(error.Message);
+                Console.Error.Flush();
 
-        return new ResponseWriter("parse").Fail(
-            ErrorCodes.InvalidArgument,
-            "Command line arguments could not be parsed.",
-            exitCode: 2);
+                context.ExitCode = new ResponseWriter("parse").Fail(
+                    ErrorCodes.InvalidArgument,
+                    "Command line arguments could not be parsed.",
+                    exitCode: 2);
+            }, MiddlewareOrder.ErrorReporting)
+            .UseExceptionHandler()
+            .CancelOnProcessTermination()
+            .Build();
+
+        return await parser.InvokeAsync(args);
     }
 
     // ── capabilities ──

@@ -28,11 +28,12 @@ dotnet publish src/Kagami/Kagami.csproj -c Release -r win-x64 -o publish
 
 ## 快速开始
 
+<!-- kagami-command-contract -->
 ```powershell
 kagami capabilities                                # 环境能力
 kagami list-windows --title "Cafe Launcher"        # 找窗口 → 拿到 HWND
 kagami observe --hwnd 0x607fc --depth 2            # 截图 + 控件树 + 窗口状态
-kagami screenshot --hwnd 0x607fc --mode window     # 窗口截图（PrintWindow/DWM）
+kagami screenshot --hwnd 0x607fc --mode window     # 窗口截图请求；检查 actual_mode
 kagami find --hwnd 0x607fc --control-type Button --name "开始游戏"
 kagami get-tree --hwnd 0x607fc --depth 2 --interactive-only --include-locators interactive
 kagami get-tree --hwnd 0x607fc --runtime-id "42.5678" --depth 1
@@ -44,23 +45,26 @@ kagami key --keys "CTRL+L" --hwnd 0x607fc
 kagami wait-for element --hwnd 0x607fc --locator '...' --timeout 10000
 ```
 
-## 命令参考
+## 命令索引（语法）
 
-```
-kagami capabilities         # 环境能力查询
-kagami list-windows         # 枚举顶层窗口
-kagami observe              # 快照（截图 + 控件树 + 窗口状态）
-kagami get-tree             # 逐层展开 UIA 控件树
-kagami find                 # 按 UIA 属性查找控件
-kagami screenshot           # 截图（窗口 / 区域 / 显示器 / 全桌面）
+下表是参数索引，不是可直接执行的示例；尖括号表示必须替换的值。可执行流程见上方“快速开始”。
 
-kagami activate             # 激活窗口
-kagami invoke               # 语义点击 (InvokePattern)
-kagami click --hwnd X --x Y --y Y              # 物理鼠标点击 (SendInput)
-kagami type-text            # 输入文字
-kagami key --keys "CTRL+L" --hwnd X             # 发送组合键
-kagami wait-for             # 条件等待
-```
+| 命令语法 | 用途 |
+|---|---|
+| `kagami capabilities` | 环境能力查询 |
+| `kagami list-windows` | 枚举顶层窗口，可追加 title/process 筛选 |
+| `kagami observe --hwnd <HWND>` | 截图 + 控件树 + 窗口状态快照 |
+| `kagami get-tree --hwnd <HWND>` | 展开 UIA 控件树 |
+| `kagami find --hwnd <HWND> --name <TEXT>` | 按至少一个 UIA 属性查找控件 |
+| `kagami screenshot` | 截图；可指定 HWND、区域或显示器 |
+| `kagami activate --hwnd <HWND>` | 激活窗口 |
+| `kagami invoke --locator <LOCATOR_JSON>` | 语义点击 (InvokePattern) |
+| `kagami click --hwnd <HWND> --x <X> --y <Y>` | 物理鼠标点击 (SendInput) |
+| `kagami type-text --text <TEXT> --mode keyboard --hwnd <HWND>` | 向明确的前台目标发送物理文字输入 |
+| `kagami key --keys <KEYS> --hwnd <HWND>` | 发送组合键 |
+| `kagami wait-for element --locator <LOCATOR_JSON>` | 等待 locator 元素出现；其他 condition 使用对应目标参数 |
+
+运行 `kagami --help` 或 `kagami <COMMAND> --help` 查看完整 option；`-h`、`/h`、`-?`、`/?` 是兼容 help 别名，`kagami --version` 输出版本。
 
 ## 核心概念
 
@@ -78,11 +82,14 @@ kagami wait-for             # 条件等待
 
 ### 截图模式
 
-| 模式 | 方法 | 有无遮挡 |
+| 请求 | 实际结果 | 遮挡语义 |
 |---|---|---|
-| `window` | legacy_window_capture (PrintWindow → DWM Thumbnail) | **无** |
-| `visible-desktop` | DXGI Desktop Duplication | 有 |
-| `auto` | 自动最优 | — |
+| `window` | `actual_mode: "window"` | 窗口表面，不受其他窗口遮挡 |
+| `window` 的内部 fallback | `actual_mode: "visible-desktop-crop"` | 可见桌面裁剪，可能被遮挡 |
+| `visible-desktop` | `actual_mode: "visible-desktop"` | 桌面合成帧，可能被遮挡 |
+| `auto` | 以响应中的 `actual_mode` 为准 | 不预设 |
+
+只有 `actual_mode: "window"` 表示拿到窗口表面；`actual_mode: "visible-desktop-crop"` 时可能被遮挡，Agent 必须按实际结果而不是请求值判断截图语义。
 
 跨后端的语义降级（`window` → `visible-desktop`）默认关闭，需 `--allow-semantic-fallback` 显式允许。`legacy_window_capture` 后端自身仍可能在 PrintWindow/DWM 失败后退化为可见桌面裁剪；此时结果会明确报告 `actual_mode: "visible-desktop-crop"`、`fallback_used: true` 和 `occlusion_possible: true`，因此 `--mode window` 不保证最终截图无视遮挡。
 
@@ -104,11 +111,11 @@ kagami wait-for             # 条件等待
 
 ### Observation guard
 
-Guard 的最长有效期为 120 秒，但 TTL 不是“状态仍新鲜”的保证。每次状态变更前仍需 fresh observation，并在操作时传入新 guard；收到 `STALE_OBSERVATION` 后必须重新观察，不能重放旧坐标或旧状态。
+Guard 的最长有效期为 120 秒，但 TTL 不是“状态仍新鲜”的保证。对支持 `--expected-state` 的状态变更命令 `invoke`、`click`、`type-text`、`key`，每次操作前仍需 fresh observation，并传入新 guard；`activate` 不接受该 option。`wait-for` 也可用 guard 约束等待起点。收到 `STALE_OBSERVATION` 后必须重新观察，不能重放旧坐标或旧状态。
 
 ### 输出格式
 
-协议调用的 stdout 每次只输出单个 JSON 文档：`{"success":true,"data":{...},"error":null}`，诊断写入 stderr。成功退出码为 0，预期操作失败为 1；命令行解析错误同样返回单个 JSON，退出码 2。
+协议调用的 stdout 每次只输出单个 JSON 文档：`{"success":true,"data":{...},"error":null}`，诊断写入 stderr。成功退出码为 0，预期操作失败为 1；命令行解析错误同样返回单个 JSON，退出码 2。`--help` 与 `--version` 是面向人的文本输出，成功时退出码为 0，不使用 JSON envelope。
 
 ## 架构
 
