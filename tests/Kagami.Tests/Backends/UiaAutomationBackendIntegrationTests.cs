@@ -124,10 +124,13 @@ public class UiaAutomationBackendIntegrationTests
         }
     }
 
-    [Fact]
-    public void Find_StartLocatorWithZeroHwnd_UsesLocatorWindowForReturnedLocators()
+    [Theory]
+    [InlineData("control")]
+    [InlineData("content")]
+    [InlineData("raw")]
+    public void Find_StartLocatorWithZeroHwnd_UsesLocatorWindowAndViewForReturnedLocators(string view)
     {
-        var (hwnd, startNode) = FindNonRootNode("control");
+        var (hwnd, startNode) = FindNonRootNode(view);
 
         var results = _backend.FindAsync(new FindOptions
         {
@@ -142,6 +145,7 @@ public class UiaAutomationBackendIntegrationTests
         {
             Assert.NotNull(result.Locator);
             Assert.Equal(hwnd, UiaAutomationBackend.ParseHwnd(result.Locator!.Window.Hwnd));
+            Assert.Equal(view, result.Locator.View);
 
             var resolved = _backend.ResolveLocatorAsync(result.Locator, CancellationToken.None)
                 .GetAwaiter().GetResult();
@@ -168,6 +172,73 @@ public class UiaAutomationBackendIntegrationTests
             }, CancellationToken.None).GetAwaiter().GetResult());
 
         Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
+    }
+
+    [Fact]
+    public void GetTree_PathRuntimeIdAndLocatorStarts_ReturnSameNodeAndTreePath()
+    {
+        var (hwnd, startNode) = FindNonRootNode("control");
+        Assert.False(string.IsNullOrEmpty(startNode.TreePath));
+
+        var starts = new[]
+        {
+            new GetTreeOptions
+            {
+                Hwnd = hwnd,
+                Path = startNode.TreePath,
+                MaxDepth = 0,
+                View = "control"
+            },
+            new GetTreeOptions
+            {
+                Hwnd = hwnd,
+                RuntimeId = startNode.RuntimeId,
+                MaxDepth = 0,
+                View = "control"
+            },
+            new GetTreeOptions
+            {
+                Hwnd = hwnd,
+                StartLocator = startNode.Locator,
+                MaxDepth = 0,
+                View = "control"
+            }
+        };
+
+        foreach (var options in starts)
+        {
+            var result = _backend.GetTreeAsync(options, CancellationToken.None)
+                .GetAwaiter().GetResult();
+
+            Assert.NotNull(result);
+            Assert.Equal(startNode.RuntimeId, result!.RuntimeId);
+            Assert.Equal(startNode.TreePath, result.TreePath);
+        }
+    }
+
+    [Theory]
+    [InlineData("control")]
+    [InlineData("content")]
+    [InlineData("raw")]
+    public void Find_RequestedViewAndMaxResults_AreApplied(string view)
+    {
+        var windows = _backend.ListWindowsAsync(true, null, null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+        var target = windows.FirstOrDefault(w => w.Title.Length > 0 && w.Rect.W > 100 && w.Rect.H > 100);
+        if (target is null)
+            return;
+
+        var hwnd = UiaAutomationBackend.ParseHwnd(target.Hwnd);
+        var results = _backend.FindAsync(new FindOptions
+        {
+            Hwnd = hwnd,
+            ControlType = "Window",
+            MaxResults = 1,
+            View = view
+        }, CancellationToken.None).GetAwaiter().GetResult();
+
+        Assert.Single(results);
+        Assert.Equal(view, results[0].Locator!.View);
     }
 
     [Fact]

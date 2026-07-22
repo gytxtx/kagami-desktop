@@ -94,34 +94,69 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         return Task.Run(() =>
         {
             AutomationElement? startElement;
+            var view = NormalizeView(options.View);
+            var treePath = "";
 
-            if (options.RuntimeId is not null)
+            if (options.StartLocator is not null)
+            {
+                var locatorHwnd = ParseHwnd(options.StartLocator.Window.Hwnd);
+                if (locatorHwnd == IntPtr.Zero || locatorHwnd != options.Hwnd)
+                {
+                    throw new CommandException(
+                        ErrorCodes.InvalidArgument,
+                        "Start locator window does not match the requested HWND.");
+                }
+
+                if (NormalizeView(options.StartLocator.View) != view)
+                {
+                    throw new CommandException(
+                        ErrorCodes.InvalidArgument,
+                        "Start locator view must match the requested tree view.");
+                }
+
+                startElement = ResolveLocatorInternal(options.StartLocator, ct);
+                if (startElement is null)
+                    return null;
+
+                var resolvedTreePath = GetTreePath(options.Hwnd, startElement, view);
+                if (resolvedTreePath is null)
+                    return null;
+
+                treePath = resolvedTreePath;
+            }
+            else if (options.RuntimeId is not null)
             {
                 // Convert the runtime-id string (e.g. "42.1234") back to runtime id array
-                startElement = FindElementByRuntimeId(options.Hwnd, options.RuntimeId);
+                startElement = FindElementByRuntimeId(options.Hwnd, options.RuntimeId, view, out treePath);
                 if (startElement is null)
                     return null;
             }
             else if (options.Path is not null)
             {
-                startElement = NavigatePath(options.Hwnd, options.Path, options.View);
+                startElement = NavigatePath(options.Hwnd, options.Path, view);
                 if (startElement is null)
                     return null;
+
+                treePath = NormalizeTreePath(options.Path);
             }
             else
             {
                 startElement = _automation.FromHandle(options.Hwnd);
             }
 
-            return BuildTree(
+            var tree = BuildTree(
                 startElement,
-                options.View,
+                view,
                 options.MaxDepth,
                 options.MaxNodes,
                 options.Hwnd,
-                "",
-                GetWalker(options.View),
+                treePath,
+                GetWalker(view),
                 ct);
+
+            return tree is null
+                ? null
+                : TreeOutputPolicy.Apply(tree, options.InteractiveOnly, options.IncludeLocators);
         }, ct);
     }
 
@@ -159,7 +194,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
             }
 
             var results = new List<TreeNode>();
-            var view = options.StartLocator?.View ?? "control";
+            var view = NormalizeView(options.View ?? options.StartLocator?.View);
             FindRecursive(start, options, results, 20, rootHwnd, view, GetWalker(view), ct);
             return results;
         }, ct);
@@ -312,8 +347,13 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
 
     // ── Internal helpers ──
 
-    private AutomationElement? FindElementByRuntimeId(IntPtr hwnd, string rtIdStr)
+    private AutomationElement? FindElementByRuntimeId(
+        IntPtr hwnd,
+        string rtIdStr,
+        string view,
+        out string treePath)
     {
+        treePath = "";
         try
         {
             var parts = rtIdStr.Split('.');
@@ -321,7 +361,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
 
             // Walk the tree from the window root to find the element with this runtime ID
             var root = _automation.FromHandle(hwnd);
-            return FindByRuntimeIdRecursive(root, rtId, 50, GetWalker("raw"));
+            return FindByRuntimeIdRecursive(root, rtId, 50, GetWalker(view), "", out treePath);
         }
         catch
         {
@@ -333,18 +373,35 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         AutomationElement element,
         int[] targetRtId,
         int maxDepth,
-        ITreeWalker walker)
+        ITreeWalker walker,
+        string currentPath,
+        out string treePath)
     {
+        treePath = "";
         if (maxDepth <= 0) return null;
 
         var currentRtId = element.Properties.RuntimeId.ValueOrDefault;
         if (currentRtId is not null && currentRtId.SequenceEqual(targetRtId))
-            return element;
-
-        foreach (var child in GetChildren(element, walker))
         {
-            var result = FindByRuntimeIdRecursive(child, targetRtId, maxDepth - 1, walker);
-            if (result is not null) return result;
+            treePath = currentPath;
+            return element;
+        }
+
+        var children = GetChildren(element, walker);
+        for (var index = 0; index < children.Count; index++)
+        {
+            var childPath = string.IsNullOrEmpty(currentPath)
+                ? index.ToString()
+                : $"{currentPath}/{index}";
+            var result = FindByRuntimeIdRecursive(
+                children[index],
+                targetRtId,
+                maxDepth - 1,
+                walker,
+                childPath,
+                out treePath);
+            if (result is not null)
+                return result;
         }
 
         return null;
@@ -372,13 +429,41 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         return current;
     }
 
+    private string? GetTreePath(IntPtr hwnd, AutomationElement target, string view)
+    {
+        var root = _automation.FromHandle(hwnd);
+        var walker = GetWalker(view);
+        var indices = new List<int>();
+        AutomationElement? current = target;
+
+        while (current is not null && !current.Equals(root))
+        {
+            var parent = walker.GetParent(current);
+            if (parent is null)
+                return null;
+
+            var siblings = GetChildren(parent, walker);
+            var index = siblings.FindIndex(candidate => candidate.Equals(current));
+            if (index < 0)
+                return null;
+
+            indices.Insert(0, index);
+            current = parent;
+        }
+
+        return current is null ? null : string.Join("/", indices);
+    }
+
+    private static string NormalizeTreePath(string path) =>
+        string.Join("/", path.Split('/', StringSplitOptions.RemoveEmptyEntries));
+
     private TreeNode? BuildTree(
         AutomationElement element,
         string view,
         int remainingDepth,
         int maxNodesBudget,
         IntPtr rootHwnd,
-        string parentPath,
+        string treePath,
         ITreeWalker walker,
         CancellationToken ct)
     {
@@ -387,35 +472,41 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
 
         try
         {
-            var node = BuildSingleNode(element, rootHwnd, null, view);
+            var node = BuildSingleNode(element, rootHwnd, null, view, treePath);
             if (node is null) return null;
 
             // remainingDepth=0 means: return just this node, no children.
             // remainingDepth>=1 means: recurse one level deeper.
             bool childrenTruncated = false;
-            int childrenCount = 0;
+            var visibleChildren = GetChildren(element, walker);
 
             if (remainingDepth >= 1)
             {
-                var visibleChildren = GetChildren(element, walker);
-                int availableBudget = maxNodesBudget - 1; // subtract self
-                childrenCount = Math.Min(availableBudget, visibleChildren.Count);
+                int availableBudget = Math.Max(0, maxNodesBudget - 1); // subtract self
+                var childrenToVisit = Math.Min(availableBudget, visibleChildren.Count);
 
-                if (childrenCount < visibleChildren.Count)
+                if (childrenToVisit < visibleChildren.Count)
                 {
                     childrenTruncated = true;
                 }
 
-                for (int i = 0; i < childrenCount; i++)
+                for (int i = 0; i < childrenToVisit; i++)
                 {
-                    var childPath = string.IsNullOrEmpty(parentPath) ? i.ToString() : $"{parentPath}/{i}";
+                    var childPath = string.IsNullOrEmpty(treePath) ? i.ToString() : $"{treePath}/{i}";
                     // Each child gets its fair share of the remaining budget
-                    int childBudget = availableBudget / childrenCount;
+                    int childBudget = availableBudget / childrenToVisit;
                     var childNode = BuildTree(visibleChildren[i], view, remainingDepth - 1,
                         childBudget, rootHwnd, childPath, walker, ct);
                     if (childNode is not null)
                         node.Children.Add(childNode);
                 }
+
+                if (node.Children.Count < visibleChildren.Count)
+                    childrenTruncated = true;
+            }
+            else if (visibleChildren.Count > 0)
+            {
+                childrenTruncated = true;
             }
 
             // Build a new TreeNode with ChildrenCount and ChildrenTruncated set
@@ -423,6 +514,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
             {
                 NodeId = node.NodeId,
                 RuntimeId = node.RuntimeId,
+                TreePath = node.TreePath,
                 ControlType = node.ControlType,
                 Name = node.Name,
                 AutomationId = node.AutomationId,
@@ -438,7 +530,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
                 HasKeyboardFocus = node.HasKeyboardFocus,
                 IsVirtualized = node.IsVirtualized,
                 Patterns = node.Patterns,
-                ChildrenCount = childrenCount,
+                ChildrenCount = node.Children.Count,
                 ChildrenTruncated = childrenTruncated,
                 Children = node.Children,
                 Locator = node.Locator
@@ -454,7 +546,8 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         AutomationElement element,
         IntPtr rootHwnd,
         Locator? existingLocator,
-        string view)
+        string view,
+        string treePath = "")
     {
         try
         {
@@ -488,6 +581,7 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
             {
                 NodeId = nodeId,
                 RuntimeId = rtIdStr,
+                TreePath = treePath,
                 ControlType = StripPrefix(ctProgName.Length > 0 ? ctProgName : "Unknown", "ControlType."),
                 Name = element.Properties.Name.ValueOrDefault,
                 AutomationId = element.Properties.AutomationId.ValueOrDefault,

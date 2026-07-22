@@ -21,6 +21,7 @@ class Program
         rootCommand.AddCommand(CreateListWindowsCommand(new ListWindowsCommand(automation)));
         rootCommand.AddCommand(CreateObserveCommand(new ObserveCommand(automation, capture, guardStore)));
         rootCommand.AddCommand(CreateGetTreeCommand(new GetTreeCommand(automation)));
+        rootCommand.AddCommand(CreateFindCommand(new FindCommand(automation)));
         rootCommand.AddCommand(CreateScreenshotCommand(new ScreenshotCommand(capture)));
 
         var interactionCmds = new InteractionCommands(input, automation, guardStore);
@@ -60,13 +61,23 @@ class Program
         var depthOpt = new Option<int>("--depth", () => 1);
         var maxNodesOpt = new Option<int>("--max-nodes", () => 200);
         var viewOpt = new Option<string>("--view", () => "control");
+        var interactiveOnlyOpt = new Option<bool>("--interactive-only");
+        var includeLocatorsOpt = new Option<string>("--include-locators", () => "all");
         var modeOpt = new Option<string>("--capture-mode", () => "auto");
         var fallbackOpt = new Option<bool>("--allow-semantic-fallback");
         var outputOpt = new Option<string?>("--output");
-        var c = new Command("observe") { hwndOpt, depthOpt, maxNodesOpt, viewOpt, modeOpt, fallbackOpt, outputOpt };
-        c.SetHandler(
-            (h, d, n, v, m, f, o) => cmd.RunAsync(h, d, n, v, m, f, o),
-            hwndOpt, depthOpt, maxNodesOpt, viewOpt, modeOpt, fallbackOpt, outputOpt);
+        var c = new Command("observe") { hwndOpt, depthOpt, maxNodesOpt, viewOpt, interactiveOnlyOpt,
+            includeLocatorsOpt, modeOpt, fallbackOpt, outputOpt };
+        c.SetHandler(ctx => cmd.RunAsync(
+            ctx.ParseResult.GetValueForOption(hwndOpt)!,
+            ctx.ParseResult.GetValueForOption(depthOpt),
+            ctx.ParseResult.GetValueForOption(maxNodesOpt),
+            ctx.ParseResult.GetValueForOption(viewOpt) ?? "control",
+            ctx.ParseResult.GetValueForOption(interactiveOnlyOpt),
+            ctx.ParseResult.GetValueForOption(includeLocatorsOpt) ?? "all",
+            ctx.ParseResult.GetValueForOption(modeOpt) ?? "auto",
+            ctx.ParseResult.GetValueForOption(fallbackOpt),
+            ctx.ParseResult.GetValueForOption(outputOpt)));
         return c;
     }
 
@@ -78,10 +89,40 @@ class Program
         var maxNodesOpt = new Option<int>("--max-nodes", () => 200);
         var viewOpt = new Option<string>("--view", () => "control");
         var pathOpt = new Option<string?>("--path");
-        var c = new Command("get-tree") { hwndOpt, depthOpt, maxNodesOpt, viewOpt, pathOpt };
+        var runtimeIdOpt = new Option<string?>("--runtime-id");
+        var locatorOpt = new Option<string?>("--locator");
+        var interactiveOnlyOpt = new Option<bool>("--interactive-only");
+        var includeLocatorsOpt = new Option<string>("--include-locators", () => "all");
+        var c = new Command("get-tree") { hwndOpt, depthOpt, maxNodesOpt, viewOpt, pathOpt,
+            runtimeIdOpt, locatorOpt, interactiveOnlyOpt, includeLocatorsOpt };
+        c.SetHandler(ctx => cmd.RunAsync(
+            ctx.ParseResult.GetValueForOption(hwndOpt)!,
+            ctx.ParseResult.GetValueForOption(depthOpt),
+            ctx.ParseResult.GetValueForOption(maxNodesOpt),
+            ctx.ParseResult.GetValueForOption(viewOpt) ?? "control",
+            ctx.ParseResult.GetValueForOption(pathOpt),
+            ctx.ParseResult.GetValueForOption(runtimeIdOpt),
+            ctx.ParseResult.GetValueForOption(locatorOpt),
+            ctx.ParseResult.GetValueForOption(interactiveOnlyOpt),
+            ctx.ParseResult.GetValueForOption(includeLocatorsOpt) ?? "all"));
+        return c;
+    }
+
+    // ── find ──
+    static Command CreateFindCommand(FindCommand cmd)
+    {
+        var hwndOpt = new Option<string>("--hwnd") { IsRequired = true };
+        var nameOpt = new Option<string?>("--name");
+        var automationIdOpt = new Option<string?>("--automation-id");
+        var controlTypeOpt = new Option<string?>("--control-type");
+        var classNameOpt = new Option<string?>("--class-name");
+        var maxResultsOpt = new Option<int>("--max-results", () => 20);
+        var viewOpt = new Option<string>("--view", () => "control");
+        var c = new Command("find") { hwndOpt, nameOpt, automationIdOpt, controlTypeOpt,
+            classNameOpt, maxResultsOpt, viewOpt };
         c.SetHandler(
-            (h, d, n, v, p) => cmd.RunAsync(h, d, n, v, p, null),
-            hwndOpt, depthOpt, maxNodesOpt, viewOpt, pathOpt);
+            (h, n, a, t, cl, m, v) => cmd.RunAsync(h, n, a, t, cl, m, v),
+            hwndOpt, nameOpt, automationIdOpt, controlTypeOpt, classNameOpt, maxResultsOpt, viewOpt);
         return c;
     }
 

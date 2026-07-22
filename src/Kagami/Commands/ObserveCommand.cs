@@ -23,6 +23,8 @@ public class ObserveCommand
         int depth,
         int maxNodes,
         string view,
+        bool interactiveOnly,
+        string includeLocators,
         string captureMode,
         bool allowSemanticFallback,
         string? outputPath)
@@ -34,11 +36,18 @@ public class ObserveCommand
 
         try
         {
+            if (!TreeOutputPolicy.IsSupportedLocatorMode(includeLocators))
+            {
+                return writer.Fail(
+                    ErrorCodes.InvalidArgument,
+                    "--include-locators must be one of: all, interactive, none.");
+            }
+
+            // Step 1: Check window state
             var hwnd = ParseHwnd(hwndStr);
             if (hwnd == IntPtr.Zero)
                 return writer.Fail(ErrorCodes.InvalidArgument, $"Invalid HWND: {hwndStr}");
 
-            // Step 1: Check window state
             if (!NativeMethods.IsWindow(hwnd))
                 return writer.Fail(ErrorCodes.WindowDestroyed, "Window no longer exists.");
 
@@ -88,7 +97,9 @@ public class ObserveCommand
                 Hwnd = hwnd,
                 MaxDepth = depth,
                 MaxNodes = maxNodes,
-                View = view
+                View = view,
+                InteractiveOnly = interactiveOnly,
+                IncludeLocators = includeLocators
             };
 
             TreeNode? tree = null;

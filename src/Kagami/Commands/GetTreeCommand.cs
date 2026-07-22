@@ -15,12 +15,45 @@ public class GetTreeCommand
     }
 
     public async Task<int> RunAsync(
-        string hwndStr, int depth, int maxNodes, string view, string? path, string? runtimeId)
+        string hwndStr,
+        int depth,
+        int maxNodes,
+        string view,
+        string? path,
+        string? runtimeId,
+        string? locatorJson,
+        bool interactiveOnly,
+        string includeLocators)
     {
         var writer = new ResponseWriter("get-tree");
 
         try
         {
+            var startSelectorCount = new[] { path, runtimeId, locatorJson }
+                .Count(value => !string.IsNullOrWhiteSpace(value));
+            if (startSelectorCount > 1)
+            {
+                return writer.Fail(
+                    ErrorCodes.InvalidArgument,
+                    "At most one of --path, --runtime-id, or --locator may be provided.");
+            }
+
+            if (!TreeOutputPolicy.IsSupportedLocatorMode(includeLocators))
+            {
+                return writer.Fail(
+                    ErrorCodes.InvalidArgument,
+                    "--include-locators must be one of: all, interactive, none.");
+            }
+
+            Locator? startLocator = null;
+            if (!string.IsNullOrWhiteSpace(locatorJson))
+            {
+                startLocator = JsonSerializer.Deserialize<Locator>(locatorJson, JsonConfig.Options)
+                    ?? throw new CommandException(
+                        ErrorCodes.InvalidArgument,
+                        "Could not parse locator JSON.");
+            }
+
             var hwnd = ParseHwnd(hwndStr);
             if (hwnd == IntPtr.Zero)
                 return writer.Fail(ErrorCodes.InvalidArgument, $"Invalid HWND: {hwndStr}");
@@ -32,7 +65,10 @@ public class GetTreeCommand
                 MaxNodes = maxNodes,
                 View = view,
                 Path = path,
-                RuntimeId = runtimeId
+                RuntimeId = runtimeId,
+                StartLocator = startLocator,
+                InteractiveOnly = interactiveOnly,
+                IncludeLocators = includeLocators
             };
 
             var tree = await _automation.GetTreeAsync(options, CancellationToken.None);
@@ -44,6 +80,10 @@ public class GetTreeCommand
         catch (CommandException ex)
         {
             return writer.Fail(ex.ErrorCode, ex.Message, ex.Retryable, ex.NativeCode, exitCode: ex.ExitCode);
+        }
+        catch (JsonException ex)
+        {
+            return writer.Fail(ErrorCodes.InvalidArgument, $"Could not parse locator JSON: {ex.Message}");
         }
         catch (Exception ex)
         {

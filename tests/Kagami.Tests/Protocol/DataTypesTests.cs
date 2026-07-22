@@ -114,4 +114,14 @@ public class DataTypesTests
         Assert.Contains("\"target_foreground_verified\":true", json);
         Assert.Contains("\"target_delivery_verified\":true", json);
     }
+
+    [Fact]
+    public void TreeNode_SerializesTreePath()
+    {
+        var json = JsonSerializer.Serialize(
+            new TreeNode { TreePath = "0/2" },
+            JsonConfig.Options);
+
+        Assert.Contains("\"tree_path\":\"0/2\"", json);
+    }
 }
