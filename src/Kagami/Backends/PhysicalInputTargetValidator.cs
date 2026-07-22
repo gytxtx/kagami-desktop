@@ -60,35 +60,44 @@ internal sealed class PhysicalInputTargetValidator
         }
 
         var targetProcessId = _windowSystem.GetProcessId(targetHwnd);
-        if (targetProcessId == 0 || _windowSystem.GetProcessId(candidateHwnd) != targetProcessId)
+        if (targetProcessId <= 0 || _windowSystem.GetProcessId(candidateHwnd) != targetProcessId)
         {
             return false;
         }
 
-        var targetRoot = NormalizeOwnerRoot(targetHwnd, targetProcessId);
-        var candidateRoot = NormalizeOwnerRoot(candidateHwnd, targetProcessId);
+        var targetRoot = NormalizeRootOwner(targetHwnd, targetProcessId);
+        var candidateRoot = NormalizeRootOwner(candidateHwnd, targetProcessId);
         return targetRoot != IntPtr.Zero && targetRoot == candidateRoot;
     }
 
-    private IntPtr NormalizeOwnerRoot(IntPtr hwnd, int expectedProcessId)
+    private IntPtr NormalizeRootOwner(IntPtr hwnd, int expectedProcessId)
     {
         var visited = new HashSet<IntPtr>();
         var current = hwnd;
 
         while (current != IntPtr.Zero && visited.Add(current))
         {
-            if (_windowSystem.GetProcessId(current) != expectedProcessId)
+            var processId = _windowSystem.GetProcessId(current);
+            if (processId <= 0 || processId != expectedProcessId)
             {
                 return IntPtr.Zero;
             }
 
-            var owner = _windowSystem.GetOwner(current);
-            if (owner == IntPtr.Zero)
+            var parent = _windowSystem.GetParent(current);
+            if (parent != IntPtr.Zero)
             {
-                return current;
+                current = parent;
+                continue;
             }
 
-            current = owner;
+            var owner = _windowSystem.GetOwner(current);
+            if (owner != IntPtr.Zero)
+            {
+                current = owner;
+                continue;
+            }
+
+            return current;
         }
 
         return IntPtr.Zero;

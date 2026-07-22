@@ -52,6 +52,9 @@ internal static partial class NativeMethods
     public static extern IntPtr WindowFromPoint(POINT point);
 
     [DllImport(User32, SetLastError = true)]
+    public static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport(User32, SetLastError = true)]
     public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
 
     public const uint GW_OWNER = 4;

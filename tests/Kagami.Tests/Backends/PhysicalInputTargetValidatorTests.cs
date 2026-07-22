@@ -77,6 +77,28 @@ public class PhysicalInputTargetValidatorTests
     }
 
     [Fact]
+    public void ValidatePointerTarget_WithChildAtPointInTargetProcess_AcceptsTargetFamily()
+    {
+        var target = new IntPtr(100);
+        var child = new IntPtr(101);
+        var windows = new FakeWindowSystem
+        {
+            ForegroundWindow = target,
+            WindowAtPoint = child
+        };
+        windows.ProcessIds[target] = 10;
+        windows.ProcessIds[child] = 10;
+        windows.Parents[child] = target;
+        var validator = new PhysicalInputTargetValidator(windows);
+
+        var validation = validator.ValidatePointerTarget(target, 300, 400);
+
+        Assert.Equal(target, validation.TargetHwnd);
+        Assert.True(validation.ForegroundVerified);
+        Assert.True(validation.DeliveryVerified);
+    }
+
+    [Fact]
     public void ValidatePointerTarget_WithHitInDifferentProcess_ThrowsPointNotInTarget()
     {
         var target = new IntPtr(100);
@@ -88,6 +110,66 @@ public class PhysicalInputTargetValidatorTests
         };
         windows.ProcessIds[target] = 10;
         windows.ProcessIds[otherWindow] = 20;
+        var validator = new PhysicalInputTargetValidator(windows);
+
+        var exception = Assert.Throws<CommandException>(() => validator.ValidatePointerTarget(target, 300, 400));
+
+        Assert.Equal(ErrorCodes.PointNotInTarget, exception.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidatePointerTarget_WithInvalidTargetProcessId_ThrowsForegroundActivationDenied()
+    {
+        var target = new IntPtr(100);
+        var windows = new FakeWindowSystem
+        {
+            ForegroundWindow = target,
+            WindowAtPoint = target
+        };
+        windows.ProcessIds[target] = -1;
+        var validator = new PhysicalInputTargetValidator(windows);
+
+        var exception = Assert.Throws<CommandException>(() => validator.ValidatePointerTarget(target, 300, 400));
+
+        Assert.Equal(ErrorCodes.ForegroundActivationDenied, exception.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidatePointerTarget_WithCrossProcessParentChain_ThrowsPointNotInTarget()
+    {
+        var target = new IntPtr(100);
+        var child = new IntPtr(101);
+        var foreignParent = new IntPtr(102);
+        var windows = new FakeWindowSystem
+        {
+            ForegroundWindow = target,
+            WindowAtPoint = child
+        };
+        windows.ProcessIds[target] = 10;
+        windows.ProcessIds[child] = 10;
+        windows.ProcessIds[foreignParent] = 20;
+        windows.Parents[child] = foreignParent;
+        windows.Owners[foreignParent] = target;
+        var validator = new PhysicalInputTargetValidator(windows);
+
+        var exception = Assert.Throws<CommandException>(() => validator.ValidatePointerTarget(target, 300, 400));
+
+        Assert.Equal(ErrorCodes.PointNotInTarget, exception.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidatePointerTarget_WithParentCycle_ThrowsPointNotInTarget()
+    {
+        var target = new IntPtr(100);
+        var child = new IntPtr(101);
+        var windows = new FakeWindowSystem
+        {
+            ForegroundWindow = target,
+            WindowAtPoint = child
+        };
+        windows.ProcessIds[target] = 10;
+        windows.ProcessIds[child] = 10;
+        windows.Parents[child] = child;
         var validator = new PhysicalInputTargetValidator(windows);
 
         var exception = Assert.Throws<CommandException>(() => validator.ValidatePointerTarget(target, 300, 400));
@@ -119,6 +201,7 @@ public class PhysicalInputTargetValidatorTests
         public IntPtr ForegroundWindow { get; init; }
         public IntPtr WindowAtPoint { get; init; }
         public Dictionary<IntPtr, IntPtr> Owners { get; } = [];
+        public Dictionary<IntPtr, IntPtr> Parents { get; } = [];
         public Dictionary<IntPtr, int> ProcessIds { get; } = [];
 
         public IntPtr GetForegroundWindow() => ForegroundWindow;
@@ -126,6 +209,8 @@ public class PhysicalInputTargetValidatorTests
         public IntPtr WindowFromPoint(int x, int y) => WindowAtPoint;
 
         public IntPtr GetOwner(IntPtr hwnd) => Owners.GetValueOrDefault(hwnd);
+
+        public IntPtr GetParent(IntPtr hwnd) => Parents.GetValueOrDefault(hwnd);
 
         public int GetProcessId(IntPtr hwnd) => ProcessIds.GetValueOrDefault(hwnd);
     }
