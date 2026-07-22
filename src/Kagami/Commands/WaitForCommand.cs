@@ -120,7 +120,7 @@ public class WaitForCommand
     {
         while (!ct.IsCancellationRequested)
         {
-            var resolved = await _automation.ResolveLocatorAsync(locator, ct);
+            var resolved = await ResolveLocatorForWaitAsync(locator, ct);
             if (resolved is not null) return;
             await Task.Delay(pollMs, ct);
         }
@@ -130,7 +130,7 @@ public class WaitForCommand
     {
         while (!ct.IsCancellationRequested)
         {
-            var resolved = await _automation.ResolveLocatorAsync(locator, ct);
+            var resolved = await ResolveLocatorForWaitAsync(locator, ct);
             if (resolved is null) return;
             await Task.Delay(pollMs, ct);
         }
@@ -140,7 +140,7 @@ public class WaitForCommand
     {
         while (!ct.IsCancellationRequested)
         {
-            var resolved = await _automation.ResolveLocatorAsync(locator, ct);
+            var resolved = await ResolveLocatorForWaitAsync(locator, ct);
             if (resolved is not null)
             {
                 var node = resolved.Node;
@@ -157,6 +157,18 @@ public class WaitForCommand
                     return;
             }
             await Task.Delay(pollMs, ct);
+        }
+    }
+
+    private async Task<LocatorResolution?> ResolveLocatorForWaitAsync(Locator locator, CancellationToken ct)
+    {
+        try
+        {
+            return await _automation.ResolveLocatorAsync(locator, ct);
+        }
+        catch (CommandException ex) when (ex.ErrorCode == ErrorCodes.LocatorNotFound)
+        {
+            return null;
         }
     }
 

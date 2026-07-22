@@ -130,20 +130,37 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
         return Task.Run(() =>
         {
             AutomationElement start;
+            IntPtr rootHwnd;
             if (options.StartLocator is not null)
             {
+                rootHwnd = ParseHwnd(options.StartLocator.Window.Hwnd);
+                if (rootHwnd == IntPtr.Zero)
+                {
+                    throw new CommandException(
+                        ErrorCodes.InvalidArgument,
+                        $"Start locator has an invalid window HWND: {options.StartLocator.Window.Hwnd}");
+                }
+
+                if (options.Hwnd != IntPtr.Zero && options.Hwnd != rootHwnd)
+                {
+                    throw new CommandException(
+                        ErrorCodes.InvalidArgument,
+                        $"Find HWND {FormatHwnd(options.Hwnd)} does not match start locator window {FormatHwnd(rootHwnd)}.");
+                }
+
                 var resolved = ResolveLocatorInternal(options.StartLocator, ct);
                 if (resolved is null) return new List<TreeNode>();
                 start = resolved;
             }
             else
             {
+                rootHwnd = options.Hwnd;
                 start = _automation.FromHandle(options.Hwnd);
             }
 
             var results = new List<TreeNode>();
             var view = options.StartLocator?.View ?? "control";
-            FindRecursive(start, options, results, 20, options.Hwnd, view, GetWalker(view), ct);
+            FindRecursive(start, options, results, 20, rootHwnd, view, GetWalker(view), ct);
             return results;
         }, ct);
     }

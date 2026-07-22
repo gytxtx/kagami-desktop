@@ -73,8 +73,11 @@ public class UiaAutomationBackendIntegrationTests
         Assert.True(tree.ControlType.Length > 0);
     }
 
-    [Fact]
-    public void ResolveLocator_AllReturnedInteractiveChildren_RoundTripToSameRuntimeId()
+    [Theory]
+    [InlineData("control")]
+    [InlineData("content")]
+    [InlineData("raw")]
+    public void ResolveLocator_AllReturnedNonRootInteractiveNodes_RoundTripToSameRuntimeId(string view)
     {
         var windows = _backend.ListWindowsAsync(true, null, null, CancellationToken.None)
             .GetAwaiter().GetResult();
@@ -88,21 +91,30 @@ public class UiaAutomationBackendIntegrationTests
                 Hwnd = hwnd,
                 MaxDepth = 2,
                 MaxNodes = 100,
-                View = "control"
+                View = view
             }, CancellationToken.None).GetAwaiter().GetResult())
             .Where(tree => tree is not null)
             .Cast<TreeNode>()
             .ToList();
 
-        var interactiveNodes = trees
+        var nonRootNodes = trees
             .SelectMany(Flatten)
-            .Where(node => node.Locator is not null && node.Patterns.Count > 0)
+            .Where(node => node.Locator is not null && node.Locator.Path.Count > 0)
             .ToList();
+        Assert.NotEmpty(nonRootNodes);
 
-        Assert.NotEmpty(interactiveNodes);
-        foreach (var node in interactiveNodes)
+        var interactiveNodes = nonRootNodes
+            .Where(node => node.Patterns.Count > 0)
+            .ToList();
+        var nodesToVerify = interactiveNodes.Count > 0
+            ? interactiveNodes
+            : new List<TreeNode> { nonRootNodes[0] };
+
+        Assert.NotEmpty(nodesToVerify);
+        foreach (var node in nodesToVerify)
         {
-            Assert.Equal("control", node.Locator!.View);
+            Assert.Equal(view, node.Locator!.View);
+            Assert.NotEmpty(node.Locator.Path);
 
             var resolved = _backend.ResolveLocatorAsync(node.Locator, CancellationToken.None)
                 .GetAwaiter().GetResult();
@@ -110,6 +122,52 @@ public class UiaAutomationBackendIntegrationTests
             Assert.NotNull(resolved);
             Assert.Equal(node.RuntimeId, resolved!.Node.RuntimeId);
         }
+    }
+
+    [Fact]
+    public void Find_StartLocatorWithZeroHwnd_UsesLocatorWindowForReturnedLocators()
+    {
+        var (hwnd, startNode) = FindNonRootNode("control");
+
+        var results = _backend.FindAsync(new FindOptions
+        {
+            Hwnd = IntPtr.Zero,
+            StartLocator = startNode.Locator,
+            ControlType = startNode.ControlType,
+            MaxResults = 5
+        }, CancellationToken.None).GetAwaiter().GetResult();
+
+        Assert.NotEmpty(results);
+        Assert.All(results, result =>
+        {
+            Assert.NotNull(result.Locator);
+            Assert.Equal(hwnd, UiaAutomationBackend.ParseHwnd(result.Locator!.Window.Hwnd));
+
+            var resolved = _backend.ResolveLocatorAsync(result.Locator, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            Assert.NotNull(resolved);
+            Assert.Equal(result.RuntimeId, resolved!.Node.RuntimeId);
+        });
+    }
+
+    [Fact]
+    public void Find_StartLocatorWithConflictingHwnd_RejectsInvalidArgument()
+    {
+        var (hwnd, startNode) = FindNonRootNode("control");
+        var conflictingHwnd = new IntPtr(hwnd.ToInt64() ^ 1);
+        if (conflictingHwnd == IntPtr.Zero)
+            conflictingHwnd = new IntPtr(1);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            _backend.FindAsync(new FindOptions
+            {
+                Hwnd = conflictingHwnd,
+                StartLocator = startNode.Locator,
+                ControlType = startNode.ControlType,
+                MaxResults = 5
+            }, CancellationToken.None).GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
     }
 
     [Fact]
@@ -181,5 +239,34 @@ public class UiaAutomationBackendIntegrationTests
             foreach (var descendant in Flatten(child))
                 yield return descendant;
         }
+    }
+
+    private (IntPtr Hwnd, TreeNode Node) FindNonRootNode(string view)
+    {
+        var windows = _backend.ListWindowsAsync(true, null, null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        foreach (var window in windows.Where(w => w.Title.Length > 0 && w.Rect.W > 100 && w.Rect.H > 100))
+        {
+            var hwnd = UiaAutomationBackend.ParseHwnd(window.Hwnd);
+            if (hwnd == IntPtr.Zero)
+                continue;
+
+            var tree = _backend.GetTreeAsync(new GetTreeOptions
+            {
+                Hwnd = hwnd,
+                MaxDepth = 2,
+                MaxNodes = 100,
+                View = view
+            }, CancellationToken.None).GetAwaiter().GetResult();
+            var node = tree is null
+                ? null
+                : Flatten(tree).FirstOrDefault(candidate =>
+                    candidate.Locator is not null && candidate.Locator.Path.Count > 0);
+            if (node is not null)
+                return (hwnd, node);
+        }
+
+        throw new Xunit.Sdk.XunitException($"No non-root {view} UIA node was available for integration testing.");
     }
 }
