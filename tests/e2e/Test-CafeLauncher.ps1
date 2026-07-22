@@ -21,7 +21,6 @@ $state = @{
     Hwnd = $null
     SettingsNode = $null
     SettingsOpened = $false
-    StartupOverlay = 'none'
     SentinelMouseDown = 0
 }
 $cafeProcess = $null
@@ -95,23 +94,33 @@ function ConvertTo-NativeArgument {
     return $builder.ToString()
 }
 
-function Invoke-Kagami {
+function Invoke-NativeProcess {
     param(
         [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
+        [string]$FilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+
+        [hashtable]$EnvironmentVariables
     )
 
     $process = [Diagnostics.Process]::new()
     try {
         $process.StartInfo = [Diagnostics.ProcessStartInfo]::new()
-        $process.StartInfo.FileName = $script:KagamiPath
+        $process.StartInfo.FileName = $FilePath
         $process.StartInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
         $process.StartInfo.UseShellExecute = $false
         $process.StartInfo.CreateNoWindow = $true
         $process.StartInfo.RedirectStandardOutput = $true
         $process.StartInfo.RedirectStandardError = $true
+        if ($null -ne $EnvironmentVariables) {
+            foreach ($key in $EnvironmentVariables.Keys) {
+                $process.StartInfo.EnvironmentVariables[[string]$key] = [string]$EnvironmentVariables[$key]
+            }
+        }
 
-        Assert-True ($process.Start()) "Failed to start Kagami for: $($Arguments -join ' ')"
+        Assert-True ($process.Start()) "Failed to start $FilePath for: $($Arguments -join ' ')"
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $process.WaitForExit()
@@ -119,21 +128,10 @@ function Invoke-Kagami {
         $stderr = $stderrTask.GetAwaiter().GetResult().Trim()
         $exitCode = $process.ExitCode
 
-        if ([string]::IsNullOrWhiteSpace($stdout)) {
-            throw "Kagami returned empty stdout for: $($Arguments -join ' ') (exit $exitCode; stderr: $stderr)"
-        }
-
-        try {
-            $response = $stdout | ConvertFrom-Json
-        }
-        catch {
-            throw "Kagami returned non-JSON stdout for: $($Arguments -join ' ') (exit $exitCode): $stdout"
-        }
-
         return [pscustomobject]@{
+            FilePath = $FilePath
             Arguments = $Arguments
             ExitCode = $exitCode
-            Response = $response
             Stdout = $stdout
             Stderr = $stderr
             CharacterCount = $stdout.Length
@@ -141,6 +139,34 @@ function Invoke-Kagami {
     }
     finally {
         $process.Dispose()
+    }
+}
+
+function Invoke-Kagami {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $invocation = Invoke-NativeProcess -FilePath $script:KagamiPath -Arguments $Arguments
+    if ([string]::IsNullOrWhiteSpace($invocation.Stdout)) {
+        throw "Kagami returned empty stdout for: $($Arguments -join ' ') (exit $($invocation.ExitCode); stderr: $($invocation.Stderr))"
+    }
+
+    try {
+        $response = $invocation.Stdout | ConvertFrom-Json
+    }
+    catch {
+        throw "Kagami returned non-JSON stdout for: $($Arguments -join ' ') (exit $($invocation.ExitCode)): $($invocation.Stdout)"
+    }
+
+    return [pscustomobject]@{
+        Arguments = $Arguments
+        ExitCode = $invocation.ExitCode
+        Response = $response
+        Stdout = $invocation.Stdout
+        Stderr = $invocation.Stderr
+        CharacterCount = $invocation.CharacterCount
     }
 }
 
@@ -157,6 +183,31 @@ function Assert-KagamiSuccess {
     $errorMessage = if ($null -ne $Invocation.Response.error) { $Invocation.Response.error.message } else { '<none>' }
     Assert-True ($Invocation.ExitCode -eq 0) "$Context exited $($Invocation.ExitCode), error=$errorCode, message=$errorMessage, stderr=$($Invocation.Stderr)"
     Assert-True ([bool]$Invocation.Response.success) "$Context returned success=false, error=$errorCode"
+}
+
+function Assert-NodeIdentity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Expected,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Actual,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Context
+    )
+
+    foreach ($field in @('name', 'control_type', 'tree_path')) {
+        $expectedValue = [string]$Expected.$field
+        $actualValue = [string]$Actual.$field
+        Assert-True ($actualValue -eq $expectedValue) "$Context changed $field from '$expectedValue' to '$actualValue'."
+    }
+
+    $expectedAutomationId = [string]$Expected.automation_id
+    if (-not [string]::IsNullOrWhiteSpace($expectedAutomationId)) {
+        $actualAutomationId = [string]$Actual.automation_id
+        Assert-True ($actualAutomationId -eq $expectedAutomationId) "$Context changed automation_id from '$expectedAutomationId' to '$actualAutomationId'."
+    }
 }
 
 function Invoke-Check {
@@ -293,51 +344,7 @@ function Get-SettingsNode {
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
 
-    throw 'Could not locate the safe Settings entry in the current Cafe Launcher UI.'
-}
-
-function Dismiss-KnownSafeStartupOverlay {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Hwnd
-    )
-
-    $simplifiedChineseContinue = -join ([char]0x7EE7, [char]0x7EED)
-    $traditionalChineseContinue = -join ([char]0x7E7C, [char]0x7E8C)
-    $japaneseContinue = -join ([char]0x7D9A, [char]0x884C)
-    $continueNames = @('Continue', $simplifiedChineseContinue, $traditionalChineseContinue, $japaneseContinue)
-    foreach ($name in $continueNames) {
-        $find = Invoke-Kagami @(
-            'find', '--hwnd', $Hwnd,
-            '--control-type', 'Button', '--name', $name,
-            '--max-results', '10'
-        )
-        if ($find.ExitCode -ne 0 -or -not $find.Response.success) {
-            continue
-        }
-
-        $button = @($find.Response.data) |
-            Where-Object { $null -ne $_.locator -and @($_.locator.path).Count -gt 0 } |
-            Select-Object -First 1
-        if ($null -eq $button) {
-            continue
-        }
-
-        $fresh = Invoke-Kagami @(
-            'observe', '--hwnd', $Hwnd,
-            '--depth', '0', '--max-nodes', '1',
-            '--include-locators', 'none', '--capture-mode', 'window'
-        )
-        Assert-KagamiSuccess $fresh 'startup-overlay observation'
-        $locatorJson = ConvertTo-CompactJson $button.locator
-        $invoke = Invoke-Kagami @(
-            'invoke', '--locator', $locatorJson,
-            '--expected-state', [string]$fresh.Response.data.guard_path
-        )
-        Assert-KagamiSuccess $invoke 'safe startup-overlay dismissal'
-        $state.StartupOverlay = "dismissed:$name"
-        return
-    }
+    throw 'Could not safely access the Settings entry. A blocking overlay or unexpected Cafe Launcher desktop state may be present. Clear that visible state and rerun this script; no overlay was dismissed and no settings were changed.'
 }
 
 function Get-FileHashOrNull {
@@ -446,10 +453,6 @@ try {
         }
     }
 
-    if ($null -ne $state.IdentityObservation) {
-        Dismiss-KnownSafeStartupOverlay -Hwnd $state.Hwnd
-    }
-
     Invoke-Check 3 'get-tree returns a usable non-root locator and tree_path' {
         Assert-True (-not [string]::IsNullOrWhiteSpace([string]$state.Hwnd)) 'Cafe HWND is unavailable from check 1.'
         $tree = Invoke-Kagami @(
@@ -491,6 +494,7 @@ try {
         )
         Assert-KagamiSuccess $roundTrip 'get-tree Settings locator round-trip'
         Assert-True ($null -ne $roundTrip.Response.data) 'Settings locator round-trip returned no node.'
+        Assert-NodeIdentity -Expected $state.SettingsNode -Actual $roundTrip.Response.data -Context 'Settings locator round-trip'
 
         $fresh = Invoke-Kagami @(
             'observe', '--hwnd', $state.Hwnd,
@@ -508,11 +512,16 @@ try {
 
         $state.SettingsOpened = $true
         return [ordered]@{
-            name = [string]$state.SettingsNode.name
-            tree_path = [string]$roundTrip.Response.data.tree_path
+            expected_name = [string]$state.SettingsNode.name
+            expected_control_type = [string]$state.SettingsNode.control_type
+            expected_tree_path = [string]$state.SettingsNode.tree_path
+            expected_automation_id = [string]$state.SettingsNode.automation_id
+            roundtrip_name = [string]$roundTrip.Response.data.name
+            roundtrip_control_type = [string]$roundTrip.Response.data.control_type
+            roundtrip_tree_path = [string]$roundTrip.Response.data.tree_path
+            roundtrip_automation_id = [string]$roundTrip.Response.data.automation_id
             mode_actual = [string]$invoke.Response.data.interaction.mode_actual
             physical_input_generated = [bool]$invoke.Response.data.interaction.physical_input_generated
-            persistent_action = $false
         }
     }
 
@@ -549,13 +558,18 @@ try {
         )
         Assert-KagamiSuccess $reuse 'reuse locator returned by find'
         Assert-True ($null -ne $reuse.Response.data) 'The locator returned by find could not be expanded with get-tree.'
+        Assert-NodeIdentity -Expected $found -Actual $reuse.Response.data -Context 'find locator round-trip'
 
         return [ordered]@{
             result_count = @($find.Response.data).Count
             name = [string]$found.name
             control_type = [string]$found.control_type
             tree_path = [string]$found.tree_path
+            automation_id = [string]$found.automation_id
             reused_name = [string]$reuse.Response.data.name
+            reused_control_type = [string]$reuse.Response.data.control_type
+            reused_tree_path = [string]$reuse.Response.data.tree_path
+            reused_automation_id = [string]$reuse.Response.data.automation_id
             locator_segments = @($found.locator.path).Count
         }
     }
@@ -676,11 +690,49 @@ namespace KagamiE2E {
     }
 
     Invoke-Check 8 'guard remains valid after 30 seconds by controlled unit contract' {
+        $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        $testProject = Join-Path $repoRoot 'tests\Kagami.Tests\Kagami.Tests.csproj'
+        Assert-True (Test-Path -LiteralPath $testProject -PathType Leaf) "Guard contract test project does not exist: $testProject"
+
+        $contractMethods = @(
+            'LoadAndValidate_AfterThirtyOneSeconds_RemainsValid',
+            'LoadAndValidate_AfterOneHundredTwentyOneSeconds_ExpiresWithConfiguredTtl'
+        )
+        $filter = ($contractMethods | ForEach-Object { "FullyQualifiedName~TempFileObservationGuardStoreTests.$_" }) -join '|'
+        $testArguments = @(
+            'test', $testProject,
+            '-c', 'Debug',
+            '--filter', $filter,
+            '--logger', 'console;verbosity=detailed'
+        )
+        $dotnetPath = (Get-Command dotnet.exe -ErrorAction Stop).Source
+        $testRun = Invoke-NativeProcess -FilePath $dotnetPath -Arguments $testArguments -EnvironmentVariables @{
+            DOTNET_CLI_UI_LANGUAGE = 'en-US'
+        }
+        $testOutput = "$($testRun.Stdout)`n$($testRun.Stderr)"
+
+        Assert-True ($testRun.ExitCode -eq 0) "Guard contract tests exited $($testRun.ExitCode): $testOutput"
+        foreach ($method in $contractMethods) {
+            Assert-True ($testOutput.Contains($method)) "Guard contract test output did not report $method."
+        }
+
+        $passedMatches = [regex]::Matches($testOutput, '(?im)\bPassed\s*:\s*(\d+)')
+        $totalMatches = [regex]::Matches($testOutput, '(?im)\bTotal tests\s*:\s*(\d+)')
+        Assert-True ($passedMatches.Count -gt 0 -and $totalMatches.Count -gt 0) 'Guard contract test output did not contain Passed and Total tests counts.'
+        $passed = [int]$passedMatches[$passedMatches.Count - 1].Groups[1].Value
+        $total = [int]$totalMatches[$totalMatches.Count - 1].Groups[1].Value
+        $notPassed = $total - $passed
+        Assert-True ($passed -eq 2 -and $total -eq 2 -and $notPassed -eq 0) "Guard contract summary was Passed=$passed, Total=$total, NotPassed=$notPassed; expected 2/2/0."
+
         return [ordered]@{
             real_wait_performed = $false
-            reason = 'The real dogfood intentionally avoids a 31-second blocking sleep.'
-            unit_contract = 'TempFileObservationGuardStoreTests.LoadAndValidate_AfterThirtyOneSeconds_RemainsValid'
-            expiry_contract = 'TempFileObservationGuardStoreTests.LoadAndValidate_AfterOneHundredTwentyOneSeconds_ExpiresWithConfiguredTtl'
+            test_project = $testProject
+            test_filter = $filter
+            exit_code = $testRun.ExitCode
+            passed = $passed
+            total = $total
+            not_passed = $notPassed
+            contracts = $contractMethods
             configured_ttl_seconds = 120
         }
     }
@@ -758,7 +810,6 @@ $summary = [ordered]@{
     failed = @($results | Where-Object status -eq 'FAIL').Count
     cafe_pid = $state.CafePid
     cafe_hwnd = $state.Hwnd
-    safe_startup_overlay = $state.StartupOverlay
     settings_sha256_unchanged = if ($null -ne $settingsHashBefore) { (Get-FileHashOrNull $settingsPath) -eq $settingsHashBefore } else { $null }
 }
 Write-Output (ConvertTo-CompactJson ([pscustomobject]$summary))
