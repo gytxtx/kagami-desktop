@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v.+') {
+            throw "Release tag must start with v: $env:RELEASE_TAG"
+          }
+
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore tests/Kagami.Tests/Kagami.Tests.csproj -r win-x64
+
+      - name: Build
+        run: dotnet build src/Kagami/Kagami.csproj -c Release -r win-x64 --no-restore
+
+      - name: Test
+        run: >-
+          dotnet test tests/Kagami.Tests/Kagami.Tests.csproj
+          -c Release
+          -r win-x64
+          --no-restore
+          --logger "trx;LogFileName=kagami-tests.trx"
+          --results-directory artifacts/test-results
+
+      - name: Publish win-x64
+        run: >-
+          dotnet publish src/Kagami/Kagami.csproj
+          -c Release
+          -r win-x64
+          --no-restore
+          -o artifacts/kagami-win-x64
+
+      - name: Package release
+        id: package
+        shell: pwsh
+        run: |
+          $archiveName = "kagami-$env:RELEASE_TAG-win-x64.zip"
+          $archivePath = Join-Path $PWD "artifacts/$archiveName"
+          Compress-Archive -Path 'artifacts/kagami-win-x64/*' -DestinationPath $archivePath -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+          $checksumPath = "$archivePath.sha256"
+          "$hash  $archiveName" | Set-Content -LiteralPath $checksumPath -Encoding ascii
+          "archive=$archivePath" >> $env:GITHUB_OUTPUT
+          "checksum=$checksumPath" >> $env:GITHUB_OUTPUT
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-test-results-${{ env.RELEASE_TAG }}
+          path: artifacts/test-results/*.trx
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE_PATH: ${{ steps.package.outputs.archive }}
+          CHECKSUM_PATH: ${{ steps.package.outputs.checksum }}
+        run: |
+          if (gh release view $env:RELEASE_TAG 2>$null) {
+            gh release upload $env:RELEASE_TAG `
+              $env:ARCHIVE_PATH `
+              $env:CHECKSUM_PATH `
+              --clobber
+          }
+          else {
+            gh release create $env:RELEASE_TAG `
+              $env:ARCHIVE_PATH `
+              $env:CHECKSUM_PATH `
+              --verify-tag `
+              --generate-notes `
+              --title "Kagami Desktop $env:RELEASE_TAG"
+          }
