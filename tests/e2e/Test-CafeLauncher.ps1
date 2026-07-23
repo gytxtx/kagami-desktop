@@ -609,8 +609,15 @@ using System;
 using System.Runtime.InteropServices;
 namespace KagamiE2E {
     public static class NativeMethods {
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentThreadId();
         [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -651,13 +658,33 @@ namespace KagamiE2E {
         $sentinelText.SelectionStart = $sentinelText.TextLength
 
         $sentinelHwnd = "0x$($sentinelForm.Handle.ToInt64().ToString('x'))"
-        [void][KagamiE2E.NativeMethods]::SetForegroundWindow($sentinelForm.Handle)
-        [Windows.Forms.Application]::DoEvents()
-        if ([KagamiE2E.NativeMethods]::GetForegroundWindow() -ne $sentinelForm.Handle) {
-            $activateSentinel = Invoke-Kagami @('activate', '--hwnd', $sentinelHwnd)
-            Assert-KagamiSuccess $activateSentinel 'activate owned sentinel window'
+        $foregroundHwnd = [KagamiE2E.NativeMethods]::GetForegroundWindow()
+        $currentThreadId = [KagamiE2E.NativeMethods]::GetCurrentThreadId()
+        $foregroundThreadId = if ($foregroundHwnd -ne [IntPtr]::Zero) {
+            [KagamiE2E.NativeMethods]::GetWindowThreadProcessId($foregroundHwnd, [IntPtr]::Zero)
         }
-        Assert-True ([KagamiE2E.NativeMethods]::GetForegroundWindow() -eq $sentinelForm.Handle) 'The owned sentinel window did not become foreground; background-input proof cannot proceed safely.'
+        else {
+            0
+        }
+        $threadInputAttached = $false
+        try {
+            if ($foregroundThreadId -ne 0 -and $foregroundThreadId -ne $currentThreadId) {
+                $threadInputAttached = [KagamiE2E.NativeMethods]::AttachThreadInput($currentThreadId, $foregroundThreadId, $true)
+                Assert-True $threadInputAttached "Could not attach the sentinel thread $currentThreadId to foreground thread $foregroundThreadId."
+            }
+
+            [void][KagamiE2E.NativeMethods]::SetForegroundWindow($sentinelForm.Handle)
+            [Windows.Forms.Application]::DoEvents()
+            [void]$sentinelText.Focus()
+            [Windows.Forms.Application]::DoEvents()
+        }
+        finally {
+            if ($threadInputAttached) {
+                [void][KagamiE2E.NativeMethods]::AttachThreadInput($currentThreadId, $foregroundThreadId, $false)
+            }
+        }
+        $actualForegroundHwnd = [KagamiE2E.NativeMethods]::GetForegroundWindow()
+        Assert-True ($actualForegroundHwnd -eq $sentinelForm.Handle) "The owned sentinel window did not become foreground (expected $sentinelHwnd, actual 0x$($actualForegroundHwnd.ToInt64().ToString('x'))); background-input proof cannot proceed safely."
 
         $guardPath = [string]$fresh.Response.data.guard_path
         $click = Invoke-Kagami @(
