@@ -10,12 +10,23 @@ public class ObserveCommand
     private readonly IAutomationBackend _automation;
     private readonly CaptureService _capture;
     private readonly IObservationGuardStore _guardStore;
+    private readonly IWindowInfoReader _windowInfoReader;
 
     public ObserveCommand(IAutomationBackend automation, CaptureService capture, IObservationGuardStore guardStore)
+        : this(automation, capture, guardStore, new WindowInfoReader())
+    {
+    }
+
+    internal ObserveCommand(
+        IAutomationBackend automation,
+        CaptureService capture,
+        IObservationGuardStore guardStore,
+        IWindowInfoReader windowInfoReader)
     {
         _automation = automation;
         _capture = capture;
         _guardStore = guardStore;
+        _windowInfoReader = windowInfoReader;
     }
 
     public async Task<int> RunAsync(
@@ -23,6 +34,8 @@ public class ObserveCommand
         int depth,
         int maxNodes,
         string view,
+        bool interactiveOnly,
+        string includeLocators,
         string captureMode,
         bool allowSemanticFallback,
         string? outputPath)
@@ -34,14 +47,16 @@ public class ObserveCommand
 
         try
         {
-            var hwnd = ParseHwnd(hwndStr);
-            if (hwnd == IntPtr.Zero)
-                return writer.Fail(ErrorCodes.InvalidArgument, $"Invalid HWND: {hwndStr}");
+            if (!TreeOutputPolicy.IsSupportedLocatorMode(includeLocators))
+            {
+                return writer.Fail(
+                    ErrorCodes.InvalidArgument,
+                    "--include-locators must be one of: all, interactive, none.");
+            }
+
+            var hwnd = HwndHelper.ParseExisting(hwndStr);
 
             // Step 1: Check window state
-            if (!NativeMethods.IsWindow(hwnd))
-                return writer.Fail(ErrorCodes.WindowDestroyed, "Window no longer exists.");
-
             if (NativeMethods.IsIconic(hwnd))
                 return writer.Fail(ErrorCodes.WindowMinimized, "Window is minimized. Restore before observing.");
 
@@ -88,7 +103,9 @@ public class ObserveCommand
                 Hwnd = hwnd,
                 MaxDepth = depth,
                 MaxNodes = maxNodes,
-                View = view
+                View = view,
+                InteractiveOnly = interactiveOnly,
+                IncludeLocators = includeLocators
             };
 
             TreeNode? tree = null;
@@ -98,6 +115,7 @@ public class ObserveCommand
             {
                 tree = await _automation.GetTreeAsync(treeOptions, CancellationToken.None);
                 uiaCompletedAt = DateTime.UtcNow.ToString("O");
+                AddTreeWarnings(warnings, tree);
             }
             catch (Exception ex)
             {
@@ -141,23 +159,7 @@ public class ObserveCommand
             var foregroundHwnd = NativeMethods.GetForegroundWindow();
 
             // Step 9: Window info
-            uint pid;
-            NativeMethods.GetWindowThreadProcessId(hwnd, out pid);
-            var procName = ProcessHelper.GetProcessName((int)pid) ?? "";
-
-            var windowInfo = new WindowInfo
-            {
-                Hwnd = UiaAutomationBackend.FormatHwnd(hwnd),
-                Pid = (int)pid,
-                ProcessName = procName,
-                Title = "", // Filled from tree root
-                ClassName = "",
-                Visible = true,
-                Cloaked = false,
-                Minimized = false,
-                Foreground = hwnd == foregroundHwnd,
-                Rect = rectAfter
-            };
+            var windowInfo = _windowInfoReader.Read(hwnd, foregroundHwnd, rectAfter);
 
             var observationData = new ObservationData
             {
@@ -206,14 +208,15 @@ public class ObserveCommand
         }
     }
 
-    private static IntPtr ParseHwnd(string hwndStr)
+    internal static void AddTreeWarnings(List<JsonWarning> warnings, TreeNode? tree)
     {
-        if (hwndStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            hwndStr = hwndStr[2..];
+        var emptyTreeWarning = UiaTreeWarnings.ForEmptyRoot(tree);
+        if (emptyTreeWarning is not null)
+            warnings.Add(emptyTreeWarning);
 
-        if (long.TryParse(hwndStr, System.Globalization.NumberStyles.HexNumber, null, out long val))
-            return (IntPtr)val;
-
-        return IntPtr.Zero;
+        var visibilityWarning = UiaTreeWarnings.ForAmbiguousVisibility(tree);
+        if (visibilityWarning is not null)
+            warnings.Add(visibilityWarning);
     }
+
 }

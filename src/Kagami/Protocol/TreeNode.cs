@@ -10,6 +10,9 @@ public class TreeNode
     [JsonPropertyName("runtime_id")]
     public string RuntimeId { get; init; } = "";
 
+    [JsonPropertyName("tree_path")]
+    public string TreePath { get; init; } = "";
+
     [JsonPropertyName("control_type")]
     public string ControlType { get; init; } = "";
 
@@ -64,6 +67,7 @@ public class TreeNode
     [JsonPropertyName("children")]
     public List<TreeNode> Children { get; init; } = new();
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonPropertyName("locator")]
     public Locator? Locator { get; init; }
 }

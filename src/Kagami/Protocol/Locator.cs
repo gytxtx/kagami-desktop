@@ -13,6 +13,9 @@ namespace Kagami.Protocol;
 /// </summary>
 public class Locator
 {
+    [JsonPropertyName("view")]
+    public string View { get; init; } = "control";
+
     [JsonPropertyName("window")]
     public WindowRef Window { get; init; } = new();
 

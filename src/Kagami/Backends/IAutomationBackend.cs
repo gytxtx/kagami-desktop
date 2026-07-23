@@ -10,6 +10,9 @@ public class GetTreeOptions
     public string View { get; init; } = "control";
     public string? Path { get; init; }
     public string? RuntimeId { get; init; }
+    public Locator? StartLocator { get; init; }
+    public bool InteractiveOnly { get; init; }
+    public string IncludeLocators { get; init; } = "all";
 }
 
 public class FindOptions
@@ -20,7 +23,8 @@ public class FindOptions
     public string? AutomationId { get; init; }
     public string? Name { get; init; }
     public string? ClassName { get; init; }
-    public int MaxResults { get; init; } = 10;
+    public int MaxResults { get; init; } = 20;
+    public string? View { get; init; }
 }
 
 public interface IAutomationBackend

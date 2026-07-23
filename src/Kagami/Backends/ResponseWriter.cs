@@ -53,6 +53,9 @@ public class ResponseWriter
 
     public int FatalException(Exception ex)
     {
+        Console.Error.WriteLine(ex);
+        Console.Error.Flush();
+
         Write(new JsonResponse
         {
             Success = false,
@@ -61,9 +64,8 @@ public class ResponseWriter
             Error = new JsonError
             {
                 Code = ErrorCodes.InternalError,
-                Message = ex.Message,
-                Retryable = false,
-                Diagnostics = ex.StackTrace
+                Message = "An unexpected internal error occurred.",
+                Retryable = false
             }
         });
         return 2;

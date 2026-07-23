@@ -6,6 +6,19 @@ namespace Kagami.Tests.Protocol;
 public class LocatorTests
 {
     [Fact]
+    public void Deserialize_LocatorWithoutView_DefaultsToControl()
+    {
+        const string json = """
+            {"window":{"hwnd":"0x1234"},"path":[]}
+            """;
+
+        var locator = JsonSerializer.Deserialize<Locator>(json, JsonConfig.Options);
+
+        Assert.NotNull(locator);
+        Assert.Equal("control", locator!.View);
+    }
+
+    [Fact]
     public void Serialize_EmptyLocator_ProducesCorrectJson()
     {
         var locator = new Locator

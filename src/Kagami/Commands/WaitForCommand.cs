@@ -93,7 +93,8 @@ public class WaitForCommand
         }
         catch (CommandException ex)
         {
-            return writer.Fail(ex.ErrorCode, ex.Message, ex.Retryable, ex.NativeCode, exitCode: ex.ExitCode);
+            return writer.Fail(ex.ErrorCode, ex.Message, ex.Retryable, ex.NativeCode,
+                details: new Dictionary<string, object?>(ex.Details), exitCode: ex.ExitCode);
         }
         catch (Exception ex)
         {
@@ -107,7 +108,7 @@ public class WaitForCommand
         {
             var windows = await _automation.ListWindowsAsync(true, null, null, ct);
             var found = windows.Any(w =>
-                (processName is null || w.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase)) &&
+                (processName is null || ProcessNameMatcher.EqualsIgnoringExe(processName, w.ProcessName)) &&
                 (title is null || w.Title.Contains(title, StringComparison.OrdinalIgnoreCase)));
 
             if (found) return;
@@ -119,7 +120,7 @@ public class WaitForCommand
     {
         while (!ct.IsCancellationRequested)
         {
-            var resolved = await _automation.ResolveLocatorAsync(locator, ct);
+            var resolved = await ResolveLocatorForWaitAsync(locator, ct);
             if (resolved is not null) return;
             await Task.Delay(pollMs, ct);
         }
@@ -129,7 +130,7 @@ public class WaitForCommand
     {
         while (!ct.IsCancellationRequested)
         {
-            var resolved = await _automation.ResolveLocatorAsync(locator, ct);
+            var resolved = await ResolveLocatorForWaitAsync(locator, ct);
             if (resolved is null) return;
             await Task.Delay(pollMs, ct);
         }
@@ -139,7 +140,7 @@ public class WaitForCommand
     {
         while (!ct.IsCancellationRequested)
         {
-            var resolved = await _automation.ResolveLocatorAsync(locator, ct);
+            var resolved = await ResolveLocatorForWaitAsync(locator, ct);
             if (resolved is not null)
             {
                 var node = resolved.Node;
@@ -156,6 +157,18 @@ public class WaitForCommand
                     return;
             }
             await Task.Delay(pollMs, ct);
+        }
+    }
+
+    private async Task<LocatorResolution?> ResolveLocatorForWaitAsync(Locator locator, CancellationToken ct)
+    {
+        try
+        {
+            return await _automation.ResolveLocatorAsync(locator, ct);
+        }
+        catch (CommandException ex) when (ex.ErrorCode == ErrorCodes.LocatorNotFound)
+        {
+            return null;
         }
     }
 

@@ -35,12 +35,7 @@ public class ScreenshotCommand
 
             IntPtr? hwnd = null;
             if (hwndStr is not null)
-            {
-                var parsed = ParseHwnd(hwndStr);
-                if (parsed == IntPtr.Zero)
-                    return writer.Fail(ErrorCodes.InvalidArgument, $"Invalid HWND: {hwndStr}");
-                hwnd = parsed;
-            }
+                hwnd = HwndHelper.ParseExisting(hwndStr);
 
             var options = new CaptureOptions
             {
@@ -86,16 +81,5 @@ public class ScreenshotCommand
         {
             return writer.FatalException(ex);
         }
-    }
-
-    private static IntPtr ParseHwnd(string hwndStr)
-    {
-        if (hwndStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            hwndStr = hwndStr[2..];
-
-        if (long.TryParse(hwndStr, System.Globalization.NumberStyles.HexNumber, null, out long val))
-            return (IntPtr)val;
-
-        return IntPtr.Zero;
     }
 }

@@ -87,6 +87,15 @@ public class InteractionResult
 
     [JsonPropertyName("physical_input_generated")]
     public bool PhysicalInputGenerated { get; init; }
+
+    [JsonPropertyName("target_hwnd")]
+    public string? TargetHwnd { get; init; }
+
+    [JsonPropertyName("target_foreground_verified")]
+    public bool TargetForegroundVerified { get; init; }
+
+    [JsonPropertyName("target_delivery_verified")]
+    public bool TargetDeliveryVerified { get; init; }
 }
 
 public class CapabilitiesData
@@ -160,4 +169,5 @@ public class GuardValidationResult
     public bool Valid { get; init; }
     public string? FailureCode { get; init; }
     public string? FailureMessage { get; init; }
+    public ObservationGuard? Guard { get; init; }
 }

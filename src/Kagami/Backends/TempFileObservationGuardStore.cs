@@ -6,7 +6,7 @@ namespace Kagami.Backends;
 
 /// <summary>
 /// Stores observation guard files as JSON on disk.
-/// Guards auto-expire after 30 seconds; cleanup runs on each operation.
+/// Guards auto-expire after 120 seconds; cleanup runs on each operation.
 ///
 /// Validation order:
 ///   1. Guard file exists and is within TTL (file creation time + guard.captured_at)
@@ -18,7 +18,18 @@ namespace Kagami.Backends;
 /// </summary>
 public class TempFileObservationGuardStore : IObservationGuardStore
 {
-    private static readonly TimeSpan GuardTtl = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan GuardTtl = TimeSpan.FromSeconds(120);
+    private readonly TimeProvider _timeProvider;
+
+    public TempFileObservationGuardStore()
+        : this(TimeProvider.System)
+    {
+    }
+
+    internal TempFileObservationGuardStore(TimeProvider timeProvider)
+    {
+        _timeProvider = timeProvider;
+    }
 
     /// <summary>
     /// Maximum allowed window rect shift in pixels for physical actions.
@@ -69,9 +80,12 @@ public class TempFileObservationGuardStore : IObservationGuardStore
         }
 
         // Validate guard path is under expected directory (path traversal prevention)
-        var expectedDir = TempFileManager.GetGuardDirectory();
+        var expectedDir = Path.GetFullPath(TempFileManager.GetGuardDirectory());
         var fullPath = Path.GetFullPath(guardPath);
-        if (!fullPath.StartsWith(expectedDir, StringComparison.OrdinalIgnoreCase))
+        var relativePath = Path.GetRelativePath(expectedDir, fullPath);
+        if (Path.IsPathRooted(relativePath) ||
+            relativePath.Equals("..", StringComparison.Ordinal) ||
+            relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
         {
             return Task.FromResult(new GuardValidationResult
             {
@@ -83,7 +97,7 @@ public class TempFileObservationGuardStore : IObservationGuardStore
 
         // Check TTL using both file creation time AND guard.captured_at
         var fileCreated = File.GetCreationTimeUtc(guardPath);
-        var now = DateTime.UtcNow;
+        var now = _timeProvider.GetUtcNow().UtcDateTime;
         ObservationGuard guard;
 
         try
@@ -113,7 +127,7 @@ public class TempFileObservationGuardStore : IObservationGuardStore
                 {
                     Valid = false,
                     FailureCode = ErrorCodes.StaleObservation,
-                    FailureMessage = $"Observation is stale: captured {capturedAt:O}, now {now:O} (>30s TTL)."
+                    FailureMessage = $"Observation is stale: captured {capturedAt:O}, now {now:O} (>{GuardTtl.TotalSeconds:0}s TTL)."
                 });
             }
         }
@@ -126,7 +140,7 @@ public class TempFileObservationGuardStore : IObservationGuardStore
             {
                 Valid = false,
                 FailureCode = ErrorCodes.StaleObservation,
-                FailureMessage = "Guard file expired (30s TTL)."
+                FailureMessage = $"Guard file expired ({GuardTtl.TotalSeconds:0}s TTL)."
             });
         }
 
@@ -226,7 +240,7 @@ public class TempFileObservationGuardStore : IObservationGuardStore
             }
         }
 
-        return Task.FromResult(new GuardValidationResult { Valid = true });
+        return Task.FromResult(new GuardValidationResult { Valid = true, Guard = guard });
     }
 
     public Task CleanupExpiredAsync(CancellationToken ct)

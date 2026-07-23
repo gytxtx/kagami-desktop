@@ -62,14 +62,14 @@ public class ResponseWriterTests
                 retryable: true, nativeCode: 123);
 
             var output = sw.ToString().Trim();
-            var deserialized = JsonSerializer.Deserialize<JsonResponse>(output, JsonConfig.Options);
+            using var document = JsonDocument.Parse(output);
+            var error = document.RootElement.GetProperty("error");
 
-            Assert.NotNull(deserialized);
-            Assert.False(deserialized!.Success);
-            Assert.NotNull(deserialized.Error);
-            Assert.Equal("LOCATOR_NOT_FOUND", deserialized.Error!.Code);
-            Assert.True(deserialized.Error.Retryable);
-            Assert.Equal(123, deserialized.Error.NativeCode);
+            Assert.Equal("LOCATOR_NOT_FOUND", error.GetProperty("code").GetString());
+            Assert.True(error.GetProperty("retryable").GetBoolean());
+            Assert.Equal(123, error.GetProperty("native_code").GetInt32());
+            Assert.Equal(JsonValueKind.Object, error.GetProperty("details").ValueKind);
+            Assert.False(error.TryGetProperty("detais", out _));
         }
         finally
         {
@@ -78,11 +78,34 @@ public class ResponseWriterTests
     }
 
     [Fact]
-    public void FatalException_ReturnsExitCodeTwo()
+    public void FatalException_ReturnsSafeJsonAndWritesDiagnosticsToStderr()
     {
-        var writer = new Kagami.Backends.ResponseWriter("crash");
-        var code = writer.FatalException(new InvalidOperationException("Something broke"));
-        Assert.Equal(2, code);
+        var originalOut = Console.Out;
+        var originalError = Console.Error;
+        try
+        {
+            using var stdout = new StringWriter();
+            using var stderr = new StringWriter();
+            Console.SetOut(stdout);
+            Console.SetError(stderr);
+
+            var writer = new Kagami.Backends.ResponseWriter("crash");
+            var code = writer.FatalException(new InvalidOperationException("Something broke"));
+
+            Assert.Equal(2, code);
+            using var document = JsonDocument.Parse(stdout.ToString());
+            var error = document.RootElement.GetProperty("error");
+            Assert.Equal("INTERNAL_ERROR", error.GetProperty("code").GetString());
+            Assert.False(string.IsNullOrWhiteSpace(error.GetProperty("message").GetString()));
+            Assert.False(error.TryGetProperty("diagnostics", out _));
+            Assert.DoesNotContain("Something broke", stdout.ToString());
+            Assert.Contains("Something broke", stderr.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
+        }
     }
 
     [Fact]

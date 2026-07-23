@@ -9,16 +9,80 @@ using static Kagami.Utilities.NativeMethods;
 
 namespace Kagami.Backends;
 
+internal interface IInputInjector
+{
+    uint SendInput(INPUT[] inputs);
+}
+
+internal interface IClipboardAdapter
+{
+    uint GetSequenceNumber();
+    void SetText(string text);
+}
+
+internal sealed class NativeInputInjector : IInputInjector
+{
+    public uint SendInput(INPUT[] inputs) =>
+        NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+}
+
+internal sealed class NativeClipboardAdapter : IClipboardAdapter
+{
+    public uint GetSequenceNumber() => NativeMethods.GetClipboardSequenceNumber();
+
+    public void SetText(string text)
+    {
+        if (!NativeMethods.OpenClipboard(IntPtr.Zero))
+            throw new InvalidOperationException("Cannot open clipboard.");
+
+        try
+        {
+            NativeMethods.EmptyClipboard();
+
+            int size = (text.Length + 1) * 2;
+            IntPtr hMem = Marshal.AllocHGlobal(size);
+            Marshal.Copy(Encoding.Unicode.GetBytes(text + '\0'), 0, hMem, size);
+            NativeMethods.SetClipboardData(NativeMethods.CF_UNICODETEXT, hMem);
+            // The clipboard owns hMem after SetClipboardData succeeds.
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+    }
+}
+
 public class Win32InputBackend : IInputBackend, IDisposable
 {
     private readonly IAutomationBackend _automation;
     private readonly UIA3Automation _rawAutomation;
     private readonly IObservationGuardStore _guardStore;
+    private readonly PhysicalInputTargetValidator _targetValidator;
+    private readonly IInputInjector _inputInjector;
+    private readonly IClipboardAdapter _clipboard;
 
     public Win32InputBackend(IAutomationBackend automation, IObservationGuardStore guardStore)
+        : this(
+            automation,
+            guardStore,
+            new PhysicalInputTargetValidator(new NativeWindowSystem()),
+            new NativeInputInjector(),
+            new NativeClipboardAdapter())
+    {
+    }
+
+    internal Win32InputBackend(
+        IAutomationBackend automation,
+        IObservationGuardStore guardStore,
+        PhysicalInputTargetValidator targetValidator,
+        IInputInjector inputInjector,
+        IClipboardAdapter clipboard)
     {
         _automation = automation;
         _guardStore = guardStore;
+        _targetValidator = targetValidator;
+        _inputInjector = inputInjector;
+        _clipboard = clipboard;
         _rawAutomation = new UIA3Automation();
     }
 
@@ -62,7 +126,12 @@ public class Win32InputBackend : IInputBackend, IDisposable
         }, ct);
     }
 
-    public Task<ClickResult> ClickAsync(int x, int y, bool rightButton, CancellationToken ct)
+    public Task<ClickResult> ClickAsync(
+        IntPtr targetHwnd,
+        int x,
+        int y,
+        bool rightButton,
+        CancellationToken ct)
     {
         return Task.Run(() =>
         {
@@ -79,6 +148,8 @@ public class Win32InputBackend : IInputBackend, IDisposable
                     $"Coordinate ({x},{y}) is outside the virtual desktop ({vScreenX},{vScreenY})–({vScreenX + vScreenW},{vScreenY + vScreenH}).");
             }
 
+            var validation = _targetValidator.ValidatePointerTarget(targetHwnd, x, y);
+
             // Move cursor to position with VIRTUALDESK for correct multi-monitor handling
             var inputs = new INPUT[3];
 
@@ -93,7 +164,7 @@ public class Win32InputBackend : IInputBackend, IDisposable
             int upFlag = rightButton ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
             inputs[2] = CreateMouseInput(x, y, (uint)(upFlag | MOUSEEVENTF_ABSOLUTE), 0);
 
-            uint result = SendInput(3, inputs, Marshal.SizeOf<INPUT>());
+            uint result = _inputInjector.SendInput(inputs);
             if (result == 0)
                 throw new CommandException(ErrorCodes.InputInjectionFailed, $"SendInput failed. GetLastError: {Marshal.GetLastWin32Error()}");
 
@@ -106,7 +177,10 @@ public class Win32InputBackend : IInputBackend, IDisposable
                 {
                     ModeRequested = "physical",
                     ModeActual = "sendinput-mouse",
-                    PhysicalInputGenerated = true
+                    PhysicalInputGenerated = true,
+                    TargetHwnd = FormatHwnd(validation.TargetHwnd),
+                    TargetForegroundVerified = validation.ForegroundVerified,
+                    TargetDeliveryVerified = validation.DeliveryVerified
                 }
             };
         }, ct);
@@ -124,13 +198,20 @@ public class Win32InputBackend : IInputBackend, IDisposable
             if (mode is InteractionMode.Auto or InteractionMode.Semantic)
             {
                 AutomationElement? element = null;
-                if (options.Locator is not null)
+                try
                 {
-                    element = ((UiaAutomationBackend)_automation).ResolveLocatorInternal(options.Locator, ct);
+                    if (options.Locator is not null)
+                    {
+                        element = ((UiaAutomationBackend)_automation).ResolveLocatorInternal(options.Locator, ct);
+                    }
+                    else if (options.Hwnd.HasValue)
+                    {
+                        element = _rawAutomation.FromHandle(options.Hwnd.Value);
+                    }
                 }
-                else if (options.Hwnd.HasValue)
+                catch when (mode == InteractionMode.Auto)
                 {
-                    element = _rawAutomation.FromHandle(options.Hwnd.Value);
+                    // Auto mode may fall back to keyboard input, which is validated below.
                 }
 
                 if (element is not null)
@@ -151,7 +232,8 @@ public class Win32InputBackend : IInputBackend, IDisposable
                                 {
                                     ModeRequested = mode.ToString().ToLowerInvariant(),
                                     ModeActual = actualMode,
-                                    PhysicalInputGenerated = false
+                                    PhysicalInputGenerated = false,
+                                    TargetHwnd = FormatOptionalHwnd(options.Hwnd)
                                 }
                             };
                         }
@@ -163,6 +245,7 @@ public class Win32InputBackend : IInputBackend, IDisposable
             // --- Try Unicode SendInput ---
             if (mode is InteractionMode.Auto or InteractionMode.Physical)
             {
+                var validation = _targetValidator.ValidateKeyboardTarget(options.Hwnd ?? IntPtr.Zero);
                 try
                 {
                     SimulateUnicodeText(options.Text);
@@ -176,7 +259,10 @@ public class Win32InputBackend : IInputBackend, IDisposable
                         {
                             ModeRequested = mode.ToString().ToLowerInvariant(),
                             ModeActual = actualMode,
-                            PhysicalInputGenerated = true
+                            PhysicalInputGenerated = true,
+                            TargetHwnd = FormatHwnd(validation.TargetHwnd),
+                            TargetForegroundVerified = validation.ForegroundVerified,
+                            TargetDeliveryVerified = validation.DeliveryVerified
                         }
                     };
                 }
@@ -186,6 +272,7 @@ public class Win32InputBackend : IInputBackend, IDisposable
             // --- Try clipboard paste (only with explicit opt-in) ---
             if (mode is InteractionMode.Auto or InteractionMode.Physical && options.AllowClipboard)
             {
+                var validation = _targetValidator.ValidateKeyboardTarget(options.Hwnd ?? IntPtr.Zero);
                 try
                 {
                     clipboardChanged = ClipboardPaste(options.Text);
@@ -199,7 +286,10 @@ public class Win32InputBackend : IInputBackend, IDisposable
                         {
                             ModeRequested = mode.ToString().ToLowerInvariant(),
                             ModeActual = actualMode,
-                            PhysicalInputGenerated = false
+                            PhysicalInputGenerated = true,
+                            TargetHwnd = FormatHwnd(validation.TargetHwnd),
+                            TargetForegroundVerified = validation.ForegroundVerified,
+                            TargetDeliveryVerified = validation.DeliveryVerified
                         }
                     };
                 }
@@ -216,6 +306,7 @@ public class Win32InputBackend : IInputBackend, IDisposable
         return Task.Run(() =>
         {
             var vkCodes = ParseKeyCombination(options.Keys);
+            var validation = _targetValidator.ValidateKeyboardTarget(options.Hwnd ?? IntPtr.Zero);
             var inputs = new List<INPUT>();
 
             foreach (var (vk, isDown, isExtended) in GenerateInputSequence(vkCodes))
@@ -237,7 +328,7 @@ public class Win32InputBackend : IInputBackend, IDisposable
                 });
             }
 
-            uint result = SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf<INPUT>());
+            uint result = _inputInjector.SendInput(inputs.ToArray());
             if (result == 0)
                 throw new CommandException(ErrorCodes.InputInjectionFailed, $"SendInput failed. GetLastError: {Marshal.GetLastWin32Error()}");
 
@@ -248,7 +339,10 @@ public class Win32InputBackend : IInputBackend, IDisposable
                 {
                     ModeRequested = "physical",
                     ModeActual = "sendinput-keyboard",
-                    PhysicalInputGenerated = true
+                    PhysicalInputGenerated = true,
+                    TargetHwnd = FormatHwnd(validation.TargetHwnd),
+                    TargetForegroundVerified = validation.ForegroundVerified,
+                    TargetDeliveryVerified = validation.DeliveryVerified
                 }
             };
         }, ct);
@@ -281,6 +375,9 @@ public class Win32InputBackend : IInputBackend, IDisposable
     // ── Internal ──
 
     private static string FormatHwnd(IntPtr hwnd) => $"0x{hwnd:x}";
+
+    private static string? FormatOptionalHwnd(IntPtr? hwnd) =>
+        hwnd.HasValue && hwnd.Value != IntPtr.Zero ? FormatHwnd(hwnd.Value) : null;
 
     private static INPUT CreateMouseInput(int x, int y, uint flags, int data)
     {
@@ -317,7 +414,7 @@ public class Win32InputBackend : IInputBackend, IDisposable
         };
     }
 
-    private static void SimulateUnicodeText(string text)
+    private void SimulateUnicodeText(string text)
     {
         var inputs = new List<INPUT>();
 
@@ -358,40 +455,17 @@ public class Win32InputBackend : IInputBackend, IDisposable
             });
         }
 
-        uint result = SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf<INPUT>());
+        uint result = _inputInjector.SendInput(inputs.ToArray());
         if (result == 0)
             throw new InvalidOperationException($"Unicode SendInput failed. GetLastError: {Marshal.GetLastWin32Error()}");
     }
 
     private const int KEYEVENTF_UNICODE = 0x0004;
 
-    private static bool ClipboardPaste(string text)
+    private bool ClipboardPaste(string text)
     {
-        uint seqBefore = NativeMethods.GetClipboardSequenceNumber();
-
-        if (!NativeMethods.OpenClipboard(IntPtr.Zero))
-            throw new InvalidOperationException("Cannot open clipboard.");
-
-        try
-        {
-            NativeMethods.EmptyClipboard();
-
-            int size = (text.Length + 1) * 2; // UTF-16
-            IntPtr hMem = Marshal.AllocHGlobal(size);
-            try
-            {
-                Marshal.Copy(Encoding.Unicode.GetBytes(text + '\0'), 0, hMem, size);
-                NativeMethods.SetClipboardData(NativeMethods.CF_UNICODETEXT, hMem);
-            }
-            finally
-            {
-                // Don't free — clipboard owns this memory
-            }
-        }
-        finally
-        {
-            NativeMethods.CloseClipboard();
-        }
+        uint seqBefore = _clipboard.GetSequenceNumber();
+        _clipboard.SetText(text);
 
         // Send Ctrl+V
         var inputs = new INPUT[4];
@@ -400,10 +474,16 @@ public class Win32InputBackend : IInputBackend, IDisposable
         inputs[2] = CreateKeyInput((ushort)VK_V, false);
         inputs[3] = CreateKeyInput((ushort)VK_CONTROL, false);
 
-        SendInput(4, inputs, Marshal.SizeOf<INPUT>());
+        uint result = _inputInjector.SendInput(inputs);
+        if (result != inputs.Length)
+        {
+            throw new InvalidOperationException(
+                $"Clipboard paste SendInput injected {result} of {inputs.Length} events. " +
+                $"GetLastError: {Marshal.GetLastWin32Error()}");
+        }
 
         // Check if clipboard was modified during our operation
-        uint seqAfter = NativeMethods.GetClipboardSequenceNumber();
+        uint seqAfter = _clipboard.GetSequenceNumber();
         return seqAfter != seqBefore + 1;
     }
 

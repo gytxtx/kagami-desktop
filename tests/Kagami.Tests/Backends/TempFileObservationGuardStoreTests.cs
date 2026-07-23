@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Kagami.Backends;
 using Kagami.Protocol;
 
@@ -39,6 +40,30 @@ public class TempFileObservationGuardStoreTests
 
         Assert.False(result.Valid);
         Assert.Equal(ErrorCodes.StaleObservation, result.FailureCode);
+    }
+
+    [Fact]
+    public void LoadAndValidate_WithSamePrefixSiblingDirectory_Fails()
+    {
+        var expectedDirectory = Kagami.Utilities.TempFileManager.GetGuardDirectory();
+        var siblingDirectory = expectedDirectory + "_evil";
+        Directory.CreateDirectory(siblingDirectory);
+        var path = Path.Combine(siblingDirectory, $"guard-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, "{}");
+
+        try
+        {
+            var result = _store.LoadAndValidateAsync(path, CancellationToken.None)
+                .GetAwaiter().GetResult();
+
+            Assert.False(result.Valid);
+            Assert.Equal(ErrorCodes.InvalidArgument, result.FailureCode);
+        }
+        finally
+        {
+            File.Delete(path);
+            Directory.Delete(siblingDirectory, recursive: false);
+        }
     }
 
     [Fact]
@@ -102,6 +127,51 @@ public class TempFileObservationGuardStoreTests
         Assert.Null(ex);
     }
 
+    [Fact]
+    public void LoadAndValidate_AfterThirtyOneSeconds_RemainsValid()
+    {
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var store = new TempFileObservationGuardStore(timeProvider);
+        using var window = NativeTestWindow.Create();
+        var path = store.SaveAsync(
+            CreateValidGuard(window.Handle, timeProvider.GetUtcNow()),
+            CancellationToken.None).GetAwaiter().GetResult();
+
+        try
+        {
+            timeProvider.Advance(TimeSpan.FromSeconds(31));
+
+            var result = store.LoadAndValidateAsync(path, CancellationToken.None)
+                .GetAwaiter().GetResult();
+
+            Assert.True(result.Valid, result.FailureMessage);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LoadAndValidate_AfterOneHundredTwentyOneSeconds_ExpiresWithConfiguredTtl()
+    {
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var store = new TempFileObservationGuardStore(timeProvider);
+        using var window = NativeTestWindow.Create();
+        var path = store.SaveAsync(
+            CreateValidGuard(window.Handle, timeProvider.GetUtcNow()),
+            CancellationToken.None).GetAwaiter().GetResult();
+
+        timeProvider.Advance(TimeSpan.FromSeconds(121));
+
+        var result = store.LoadAndValidateAsync(path, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.False(result.Valid);
+        Assert.Equal(ErrorCodes.StaleObservation, result.FailureCode);
+        Assert.Contains("120s TTL", result.FailureMessage);
+    }
+
     private static ObservationGuard CreateTestGuard()
     {
         var pid = Environment.ProcessId;
@@ -118,5 +188,86 @@ public class TempFileObservationGuardStoreTests
             RootRuntimeId = "1.2",
             CapturedAt = DateTime.UtcNow.ToString("O")
         };
+    }
+
+    private static ObservationGuard CreateValidGuard(IntPtr hwnd, DateTimeOffset capturedAt)
+    {
+        var pid = Environment.ProcessId;
+        var rect = UiaAutomationBackend.GetExtendedFrameBounds(hwnd);
+
+        return new ObservationGuard
+        {
+            Hwnd = UiaAutomationBackend.FormatHwnd(hwnd),
+            Pid = pid,
+            ProcessStartTime = Kagami.Utilities.ProcessHelper.GetProcessStartTime(pid)!,
+            ForegroundHwnd = "0x0",
+            WindowRect = rect,
+            RootRuntimeId = "1.2",
+            CapturedAt = capturedAt.UtcDateTime.ToString("O")
+        };
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        private DateTimeOffset _utcNow = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        public void Advance(TimeSpan duration) => _utcNow += duration;
+    }
+
+    private sealed class NativeTestWindow : IDisposable
+    {
+        private NativeTestWindow(IntPtr handle)
+        {
+            Handle = handle;
+        }
+
+        public IntPtr Handle { get; }
+
+        public static NativeTestWindow Create()
+        {
+            var handle = CreateWindowEx(
+                0,
+                "STATIC",
+                "Kagami guard TTL test",
+                0,
+                0,
+                0,
+                100,
+                100,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                IntPtr.Zero);
+
+            Assert.NotEqual(IntPtr.Zero, handle);
+            return new NativeTestWindow(handle);
+        }
+
+        public void Dispose()
+        {
+            if (Handle != IntPtr.Zero)
+                DestroyWindow(Handle);
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CreateWindowEx(
+            uint exStyle,
+            string className,
+            string windowName,
+            uint style,
+            int x,
+            int y,
+            int width,
+            int height,
+            IntPtr parent,
+            IntPtr menu,
+            IntPtr instance,
+            IntPtr parameter);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DestroyWindow(IntPtr hwnd);
     }
 }

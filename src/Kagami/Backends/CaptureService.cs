@@ -15,13 +15,18 @@ public class CaptureService
     private readonly List<ICaptureBackend> _backends;
 
     public CaptureService()
-    {
-        _backends = new List<ICaptureBackend>
+        : this(new ICaptureBackend[]
         {
             new LegacyWindowCaptureBackend(),
             new DesktopDuplicationBackend(),
             new LegacyCaptureBackend()
-        };
+        })
+    {
+    }
+
+    internal CaptureService(IEnumerable<ICaptureBackend> backends)
+    {
+        _backends = backends.ToList();
     }
 
     public List<string> AvailableBackendNames =>
