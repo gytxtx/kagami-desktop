@@ -42,9 +42,14 @@ public class JsonResponseTests
         };
 
         var json = JsonSerializer.Serialize(response, JsonConfig.Options);
-        Assert.Contains("\"code\":\"INPUT_INJECTION_FAILED\"", json);
-        Assert.Contains("\"retryable\":true", json);
-        Assert.Contains("\"native_code\":5", json);
+        using var document = JsonDocument.Parse(json);
+        var error = document.RootElement.GetProperty("error");
+
+        Assert.Equal("INPUT_INJECTION_FAILED", error.GetProperty("code").GetString());
+        Assert.True(error.GetProperty("retryable").GetBoolean());
+        Assert.Equal(5, error.GetProperty("native_code").GetInt32());
+        Assert.Equal(100, error.GetProperty("details").GetProperty("x").GetInt32());
+        Assert.False(error.TryGetProperty("detais", out _));
     }
 
     [Fact]

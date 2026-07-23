@@ -54,9 +54,7 @@ public class GetTreeCommand
                         "Could not parse locator JSON.");
             }
 
-            var hwnd = ParseHwnd(hwndStr);
-            if (hwnd == IntPtr.Zero)
-                return writer.Fail(ErrorCodes.InvalidArgument, $"Invalid HWND: {hwndStr}");
+            var hwnd = HwndHelper.ParseExisting(hwndStr);
 
             var options = new GetTreeOptions
             {
@@ -75,7 +73,12 @@ public class GetTreeCommand
             if (tree is null)
                 return writer.Fail(ErrorCodes.ElementNotAvailable, "Could not retrieve UIA tree for this window.");
 
-            return writer.Success(tree);
+            var warnings = new List<JsonWarning>();
+            var emptyTreeWarning = UiaTreeWarnings.ForEmptyRoot(tree);
+            if (emptyTreeWarning is not null)
+                warnings.Add(emptyTreeWarning);
+
+            return writer.Success(tree, warnings);
         }
         catch (CommandException ex)
         {
@@ -91,14 +94,4 @@ public class GetTreeCommand
         }
     }
 
-    private static IntPtr ParseHwnd(string hwndStr)
-    {
-        if (hwndStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            hwndStr = hwndStr[2..];
-
-        if (long.TryParse(hwndStr, System.Globalization.NumberStyles.HexNumber, null, out long val))
-            return (IntPtr)val;
-
-        return IntPtr.Zero;
-    }
 }

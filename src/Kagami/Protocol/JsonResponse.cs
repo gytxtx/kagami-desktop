@@ -16,7 +16,7 @@ public class JsonError
     [JsonPropertyName("native_code")]
     public int? NativeCode { get; init; }
 
-    [JsonPropertyName("detais")]
+    [JsonPropertyName("details")]
     public Dictionary<string, object?> Details { get; init; } = new();
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

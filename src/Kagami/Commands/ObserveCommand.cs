@@ -54,14 +54,9 @@ public class ObserveCommand
                     "--include-locators must be one of: all, interactive, none.");
             }
 
+            var hwnd = HwndHelper.ParseExisting(hwndStr);
+
             // Step 1: Check window state
-            var hwnd = ParseHwnd(hwndStr);
-            if (hwnd == IntPtr.Zero)
-                return writer.Fail(ErrorCodes.InvalidArgument, $"Invalid HWND: {hwndStr}");
-
-            if (!NativeMethods.IsWindow(hwnd))
-                return writer.Fail(ErrorCodes.WindowDestroyed, "Window no longer exists.");
-
             if (NativeMethods.IsIconic(hwnd))
                 return writer.Fail(ErrorCodes.WindowMinimized, "Window is minimized. Restore before observing.");
 
@@ -224,14 +219,4 @@ public class ObserveCommand
             warnings.Add(visibilityWarning);
     }
 
-    private static IntPtr ParseHwnd(string hwndStr)
-    {
-        if (hwndStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            hwndStr = hwndStr[2..];
-
-        if (long.TryParse(hwndStr, System.Globalization.NumberStyles.HexNumber, null, out long val))
-            return (IntPtr)val;
-
-        return IntPtr.Zero;
-    }
 }
