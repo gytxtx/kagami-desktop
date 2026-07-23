@@ -18,13 +18,17 @@ Kagami Desktop 的解法：
 
 ## 安装
 
+预编译的 Windows x64 ZIP 及其 SHA-256 校验文件可从 [GitHub Releases](https://github.com/gytxtx/kagami-desktop/releases) 下载。发布包需要安装 .NET 10 Runtime。
+
+也可以从源码构建：
+
 ```powershell
 git clone https://github.com/gytxtx/kagami-desktop.git
 cd kagami-desktop
 dotnet publish src/Kagami/Kagami.csproj -c Release -r win-x64 -o publish
 ```
 
-要求：Windows 10 1903+, .NET 10 SDK。
+要求：Windows 10 1903+；源码构建需要 .NET 10 SDK。
 
 ## 快速开始
 
