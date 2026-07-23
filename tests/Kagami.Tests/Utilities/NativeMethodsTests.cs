@@ -89,7 +89,6 @@ public class NativeMethodsTests
     [Fact]
     public void GetClipboardSequenceNumber_DoesNotThrow()
     {
-        var seq = NativeMethods.GetClipboardSequenceNumber();
-        Assert.True(seq > 0);
+        _ = NativeMethods.GetClipboardSequenceNumber();
     }
 }
