@@ -43,6 +43,30 @@ public class TempFileObservationGuardStoreTests
     }
 
     [Fact]
+    public void LoadAndValidate_WithSamePrefixSiblingDirectory_Fails()
+    {
+        var expectedDirectory = Kagami.Utilities.TempFileManager.GetGuardDirectory();
+        var siblingDirectory = expectedDirectory + "_evil";
+        Directory.CreateDirectory(siblingDirectory);
+        var path = Path.Combine(siblingDirectory, $"guard-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, "{}");
+
+        try
+        {
+            var result = _store.LoadAndValidateAsync(path, CancellationToken.None)
+                .GetAwaiter().GetResult();
+
+            Assert.False(result.Valid);
+            Assert.Equal(ErrorCodes.InvalidArgument, result.FailureCode);
+        }
+        finally
+        {
+            File.Delete(path);
+            Directory.Delete(siblingDirectory, recursive: false);
+        }
+    }
+
+    [Fact]
     public void LoadAndValidate_WithCorruptedFile_Fails()
     {
         var path = _store.SaveAsync(CreateTestGuard(), CancellationToken.None).GetAwaiter().GetResult();

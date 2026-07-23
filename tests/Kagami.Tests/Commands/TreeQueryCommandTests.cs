@@ -164,6 +164,40 @@ public class TreeQueryCommandTests
     }
 
     [Fact]
+    public async Task GetTree_CommandFailure_PreservesStructuredDetails()
+    {
+        var automation = new RecordingAutomationBackend
+        {
+            TreeException = new CommandException(
+                ErrorCodes.LocatorAmbiguous,
+                "Locator matched multiple elements.",
+                details: new Dictionary<string, object?>
+                {
+                    ["segment_index"] = 2,
+                    ["candidate_count"] = 3
+                })
+        };
+        var command = new GetTreeCommand(automation);
+
+        var (exitCode, output) = await CaptureOutputAsync(() => command.RunAsync(
+            ExistingHwnd(),
+            depth: 3,
+            maxNodes: 40,
+            view: "control",
+            path: null,
+            runtimeId: null,
+            locatorJson: null,
+            interactiveOnly: false,
+            includeLocators: "all"));
+
+        Assert.NotEqual(0, exitCode);
+        using var response = JsonDocument.Parse(output);
+        var details = response.RootElement.GetProperty("error").GetProperty("details");
+        Assert.Equal(2, details.GetProperty("segment_index").GetInt32());
+        Assert.Equal(3, details.GetProperty("candidate_count").GetInt32());
+    }
+
+    [Fact]
     public async Task Find_WithoutFilter_FailsBeforeCallingBackend()
     {
         var automation = new RecordingAutomationBackend();
@@ -274,11 +308,15 @@ public class TreeQueryCommandTests
         public GetTreeOptions? TreeOptions { get; private set; }
         public FindOptions? FindOptions { get; private set; }
         public TreeNode? TreeResult { get; init; }
+        public CommandException? TreeException { get; init; }
         public List<TreeNode> FindResult { get; init; } = new();
 
         public Task<TreeNode?> GetTreeAsync(GetTreeOptions options, CancellationToken ct)
         {
             TreeOptions = options;
+            if (TreeException is not null)
+                throw TreeException;
+
             return Task.FromResult(TreeResult);
         }
 

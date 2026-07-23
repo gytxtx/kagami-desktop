@@ -463,15 +463,19 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
                     childrenTruncated = true;
                 }
 
+                var consumedBudget = 0;
                 for (int i = 0; i < childrenToVisit; i++)
                 {
                     var childPath = string.IsNullOrEmpty(treePath) ? i.ToString() : $"{treePath}/{i}";
-                    // Each child gets its fair share of the remaining budget
-                    int childBudget = availableBudget / childrenToVisit;
+                    var remainingChildren = childrenToVisit - i - 1;
+                    var childBudget = availableBudget - consumedBudget - remainingChildren;
                     var childNode = BuildTree(visibleChildren[i], view, remainingDepth - 1,
                         childBudget, rootHwnd, childPath, walker, ct);
                     if (childNode is not null)
+                    {
                         node.Children.Add(childNode);
+                        consumedBudget += CountTreeNodes(childNode);
+                    }
                 }
 
                 if (node.Children.Count < visibleChildren.Count)
@@ -514,6 +518,9 @@ public class UiaAutomationBackend : IAutomationBackend, IDisposable
             return null;
         }
     }
+
+    private static int CountTreeNodes(TreeNode node) =>
+        1 + node.Children.Sum(CountTreeNodes);
 
     private TreeNode? BuildSingleNode(
         AutomationElement element,

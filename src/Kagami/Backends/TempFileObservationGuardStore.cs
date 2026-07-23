@@ -80,9 +80,12 @@ public class TempFileObservationGuardStore : IObservationGuardStore
         }
 
         // Validate guard path is under expected directory (path traversal prevention)
-        var expectedDir = TempFileManager.GetGuardDirectory();
+        var expectedDir = Path.GetFullPath(TempFileManager.GetGuardDirectory());
         var fullPath = Path.GetFullPath(guardPath);
-        if (!fullPath.StartsWith(expectedDir, StringComparison.OrdinalIgnoreCase))
+        var relativePath = Path.GetRelativePath(expectedDir, fullPath);
+        if (Path.IsPathRooted(relativePath) ||
+            relativePath.Equals("..", StringComparison.Ordinal) ||
+            relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
         {
             return Task.FromResult(new GuardValidationResult
             {
