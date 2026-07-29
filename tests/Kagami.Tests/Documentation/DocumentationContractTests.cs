@@ -99,6 +99,10 @@ public sealed class DocumentationContractTests
 
         Assert.Contains("必须传 `--hwnd`，或通过已验证的 `--expected-state` guard 推导 HWND", readme);
         Assert.Contains("通过显式 `--hwnd` 或已验证的 `--expected-state` guard 绑定目标", design);
+        Assert.Contains("先验证起点和终点", readme);
+        Assert.Contains("任一端目标验证失败时不会进入鼠标按下状态", readme);
+        Assert.Contains("先验证起点和终点都满足", design);
+        Assert.Contains("任一端验证失败时不会注入按下事件", design);
     }
 
     [Fact]
