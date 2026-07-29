@@ -293,7 +293,7 @@ move --hwnd X --x Y --y Y [--expected-state guard-uuid.json]
 double-click --hwnd X --x Y --y Y [--right] [--expected-state guard-uuid.json]
 ```
 
-在屏幕物理坐标执行左键双击；追加 `--right` 时执行右键双击。注入前按相同的目标、前台和坐标命中契约验证 `--hwnd`（或 guard）与 `--x`、`--y`。
+在屏幕物理坐标执行左键双击；追加 `double-click --right` 时执行右键双击。注入前按相同的目标、前台和坐标命中契约验证 `--hwnd`（或 guard）与 `--x`、`--y`。
 
 ### `scroll`
 
@@ -310,6 +310,8 @@ drag --hwnd X --from-x X --from-y Y --to-x X --to-y Y [--expected-state guard-uu
 ```
 
 拖拽事件顺序为：移动到起点 → 左键按下 → 移动到终点 → 左键释放。注入任何事件前，Kagami 先验证起点和终点都满足相同的目标、前台和坐标命中契约；任一端验证失败时不会注入按下事件，因此不会留下鼠标按下状态。
+
+所有物理鼠标操作的 `physical_input_generated: true` 仅表示输入已注入，不代表业务后置条件完成；输入后仍需以 fresh observation 或 `wait-for` 验证业务结果。
 
 ### `type-text`
 

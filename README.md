@@ -88,7 +88,7 @@ kagami wait-for element --hwnd 0x607fc --locator '...' --timeout 10000
 | **Physical** (`click`, `move`, `double-click`, `scroll`, `drag`, `type-text --mode keyboard`, `key`) | SendInput，验证像素级可达 |
 | **Auto** (默认) | 优先 semantic，降级时输出实际路径 |
 
-物理输入有严格的目标契约：`click`、`move`、`double-click`、`scroll`、`drag` 必须传 `--hwnd`，或通过已验证的 `--expected-state` guard 推导 HWND；`key` 与 `type-text --mode keyboard` 必须显式传 `--hwnd`。执行输入前，Kagami 会实时校验目标窗口族，且目标窗口必须位于前台；所有鼠标操作都会校验所需坐标命中同一窗口族。`move`、`double-click`、`scroll` 分别要求 `--x` 和 `--y`；`scroll` 还要求非零 `--delta`，正值向上、负值向下；`drag` 要求 `--from-x`、`--from-y`、`--to-x`、`--to-y`。`double-click --right` 执行右键双击。`drag` 会在注入任何事件前先验证起点和终点，因此任一端目标验证失败时不会进入鼠标按下状态。响应中的 `target_hwnd`、`target_foreground_verified` 和 `target_delivery_verified` 用于说明这些校验结果。
+物理输入有严格的目标契约：`click`、`move`、`double-click`、`scroll`、`drag` 必须传 `--hwnd`，或通过已验证的 `--expected-state` guard 推导 HWND；`key` 与 `type-text --mode keyboard` 必须显式传 `--hwnd`。执行输入前，Kagami 会实时校验目标窗口族，且目标窗口必须位于前台；所有鼠标操作都会校验所需坐标命中同一窗口族。`move`、`double-click`、`scroll` 分别要求 `--x` 和 `--y`；`scroll` 还要求非零 `--delta`，正值向上、负值向下；`drag` 要求 `--from-x`、`--from-y`、`--to-x`、`--to-y`。`double-click --right` 执行右键双击。`drag` 的事件顺序为：移动到起点 → 左键按下 → 移动到终点 → 左键释放；它会在注入任何事件前先验证起点和终点，因此任一端目标验证失败时不会进入鼠标按下状态。响应中的 `target_hwnd`、`target_foreground_verified` 和 `target_delivery_verified` 用于说明这些校验结果。
 
 `physical_input_generated: true` 仅表示输入已注入，不代表业务后置条件完成。输入后仍应优先使用位置 condition 语法 `kagami wait-for element ...`，再执行 fresh observation 验证视觉和/或 UIA 状态；`kagami wait-for --condition element ...` 仅作为兼容语法保留。
 
