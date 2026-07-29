@@ -99,10 +99,10 @@ public class CommandLineContractTests
     }
 
     [Theory]
-    [InlineData("move", "--x", "100", "--y", "200", "--hwnd", "0x1234")]
-    [InlineData("double-click", "--x", "100", "--y", "200", "--hwnd", "0x1234")]
-    [InlineData("scroll", "--x", "100", "--y", "200", "--delta", "-2", "--hwnd", "0x1234")]
-    [InlineData("drag", "--from-x", "100", "--from-y", "200", "--to-x", "300", "--to-y", "400", "--hwnd", "0x1234")]
+    [InlineData("move", "--x", "100", "--y", "200", "--hwnd", "0x1234", "--expected-state", "test.guard")]
+    [InlineData("double-click", "--x", "100", "--y", "200", "--right", "--hwnd", "0x1234", "--expected-state", "test.guard")]
+    [InlineData("scroll", "--x", "100", "--y", "200", "--delta", "-2", "--hwnd", "0x1234", "--expected-state", "test.guard")]
+    [InlineData("drag", "--from-x", "100", "--from-y", "200", "--to-x", "300", "--to-y", "400", "--hwnd", "0x1234", "--expected-state", "test.guard")]
     public async Task MouseCommands_CompleteArguments_AreRecognized(params string[] args)
     {
         var result = await InvokeCli(args);
@@ -373,7 +373,11 @@ public class CommandLineContractTests
             Task.FromResult("test.guard");
 
         public Task<GuardValidationResult> LoadAndValidateAsync(string guardPath, CancellationToken ct) =>
-            throw new NotSupportedException();
+            Task.FromResult(new GuardValidationResult
+            {
+                Valid = true,
+                Guard = new ObservationGuard { Hwnd = "0x1234" }
+            });
 
         public Task CleanupExpiredAsync(CancellationToken ct) => Task.CompletedTask;
     }
