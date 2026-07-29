@@ -108,8 +108,11 @@ public class CommandLineContractTests
         var result = await InvokeCli(args);
 
         Assert.Equal(0, result.ExitCode);
+        Assert.Equal("test.guard", result.LastValidatedGuardPath);
         using var response = JsonDocument.Parse(result.Stdout);
         Assert.True(response.RootElement.GetProperty("success").GetBoolean());
+        if (args[0] == "double-click")
+            Assert.True(response.RootElement.GetProperty("data").GetProperty("rightButton").GetBoolean());
     }
 
     [Theory]
@@ -246,13 +249,14 @@ public class CommandLineContractTests
             Console.SetOut(stdout);
             Console.SetError(stderr);
 
+            var guardStore = new StubObservationGuardStore();
             var rootCommand = Kagami.Program.BuildRootCommand(
                 new StubAutomationBackend(),
                 new StubInputBackend(),
                 new CaptureService(),
-                new StubObservationGuardStore());
+                guardStore);
             var exitCode = await Kagami.Program.InvokeAsync(rootCommand, args);
-            return new CliResult(exitCode, stdout.ToString(), stderr.ToString());
+            return new CliResult(exitCode, stdout.ToString(), stderr.ToString(), guardStore.LastValidatedPath);
         }
         finally
         {
@@ -277,7 +281,7 @@ public class CommandLineContractTests
         }
     }
 
-    private sealed record CliResult(int ExitCode, string Stdout, string Stderr);
+    private sealed record CliResult(int ExitCode, string Stdout, string Stderr, string? LastValidatedGuardPath);
 
     private sealed class StubAutomationBackend : IAutomationBackend
     {
@@ -369,15 +373,20 @@ public class CommandLineContractTests
 
     private sealed class StubObservationGuardStore : IObservationGuardStore
     {
+        public string? LastValidatedPath { get; private set; }
+
         public Task<string> SaveAsync(ObservationGuard guard, CancellationToken ct) =>
             Task.FromResult("test.guard");
 
-        public Task<GuardValidationResult> LoadAndValidateAsync(string guardPath, CancellationToken ct) =>
-            Task.FromResult(new GuardValidationResult
+        public Task<GuardValidationResult> LoadAndValidateAsync(string guardPath, CancellationToken ct)
+        {
+            LastValidatedPath = guardPath;
+            return Task.FromResult(new GuardValidationResult
             {
                 Valid = true,
                 Guard = new ObservationGuard { Hwnd = "0x1234" }
             });
+        }
 
         public Task CleanupExpiredAsync(CancellationToken ct) => Task.CompletedTask;
     }
