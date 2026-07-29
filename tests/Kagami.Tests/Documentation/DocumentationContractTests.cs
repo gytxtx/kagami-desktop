@@ -67,6 +67,45 @@ public sealed class DocumentationContractTests
     }
 
     [Fact]
+    public void MouseOperationDocumentation_CoversEveryPhysicalMouseCommand()
+    {
+        var readme = ReadDocument("README.md");
+        var design = ReadDocument("docs/DESIGN.md");
+
+        Assert.Contains("`kagami move --hwnd <HWND> --x <X> --y <Y>`", readme);
+        Assert.Contains("`kagami double-click --hwnd <HWND> --x <X> --y <Y> [--right]`", readme);
+        Assert.Contains("`kagami scroll --hwnd <HWND> --x <X> --y <Y> --delta <DELTA>`", readme);
+        Assert.Contains("`kagami drag --hwnd <HWND> --from-x <X> --from-y <Y> --to-x <X> --to-y <Y>`", readme);
+
+        Assert.Contains("move --hwnd X --x Y --y Y", design);
+        Assert.Contains("double-click --hwnd X --x Y --y Y [--right]", design);
+        Assert.Contains("scroll --hwnd X --x Y --y Y --delta N", design);
+        Assert.Contains("drag --hwnd X --from-x X --from-y Y --to-x X --to-y Y", design);
+
+        Assert.All(new[] { readme, design }, document =>
+        {
+            Assert.Contains("目标窗口必须位于前台", document);
+            Assert.Contains("命中同一窗口族", document);
+            Assert.Contains("正值向上", document);
+            Assert.Contains("负值向下", document);
+            Assert.Contains("double-click --right", document);
+            Assert.Contains("起点和终点", document);
+            Assert.Contains("注入任何事件前", document);
+            Assert.Contains("移动到起点 → 左键按下 → 移动到终点 → 左键释放", document);
+            Assert.Contains("physical_input_generated: true", document);
+            Assert.Contains("仅表示输入已注入", document);
+            Assert.Contains("不代表业务后置条件完成", document);
+        });
+
+        Assert.Contains("必须传 `--hwnd`，或通过已验证的 `--expected-state` guard 推导 HWND", readme);
+        Assert.Contains("通过显式 `--hwnd` 或已验证的 `--expected-state` guard 绑定目标", design);
+        Assert.Contains("先验证起点和终点", readme);
+        Assert.Contains("任一端目标验证失败时不会进入鼠标按下状态", readme);
+        Assert.Contains("先验证起点和终点都满足", design);
+        Assert.Contains("任一端验证失败时不会注入按下事件", design);
+    }
+
+    [Fact]
     public void TreeQueryDocumentation_CoversProgressiveDiscoveryContract()
     {
         var allDocs = ReadAllDocuments();

@@ -186,6 +186,148 @@ public class Win32InputBackend : IInputBackend, IDisposable
         }, ct);
     }
 
+    public Task<MoveResult> MoveAsync(IntPtr targetHwnd, int x, int y, CancellationToken ct)
+    {
+        return Task.Run(() =>
+        {
+            ValidateVirtualDesktopCoordinate(x, y);
+            var validation = _targetValidator.ValidatePointerTarget(targetHwnd, x, y);
+            var inputs = new[]
+            {
+                CreateMouseInput(x, y, (uint)(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE), 0)
+            };
+
+            EnsureInjectionCompleted(inputs);
+
+            return new MoveResult
+            {
+                X = x,
+                Y = y,
+                Interaction = CreateMouseInteraction(validation)
+            };
+        }, ct);
+    }
+
+    public Task<DoubleClickResult> DoubleClickAsync(
+        IntPtr targetHwnd,
+        int x,
+        int y,
+        bool rightButton,
+        CancellationToken ct)
+    {
+        return Task.Run(() =>
+        {
+            ValidateVirtualDesktopCoordinate(x, y);
+            var validation = _targetValidator.ValidatePointerTarget(targetHwnd, x, y);
+            int downFlag = rightButton ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+            int upFlag = rightButton ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
+            var inputs = new[]
+            {
+                CreateMouseInput(x, y, (uint)(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE), 0),
+                CreateMouseInput(x, y, (uint)(downFlag | MOUSEEVENTF_ABSOLUTE), 0),
+                CreateMouseInput(x, y, (uint)(upFlag | MOUSEEVENTF_ABSOLUTE), 0),
+                CreateMouseInput(x, y, (uint)(downFlag | MOUSEEVENTF_ABSOLUTE), 0),
+                CreateMouseInput(x, y, (uint)(upFlag | MOUSEEVENTF_ABSOLUTE), 0)
+            };
+
+            EnsureInjectionCompleted(inputs, injectedCount => injectedCount switch
+            {
+                2 or 4 => CreateMouseInput(x, y, (uint)(upFlag | MOUSEEVENTF_ABSOLUTE), 0),
+                _ => null
+            });
+
+            return new DoubleClickResult
+            {
+                X = x,
+                Y = y,
+                RightButton = rightButton,
+                Interaction = CreateMouseInteraction(validation)
+            };
+        }, ct);
+    }
+
+    public Task<ScrollResult> ScrollAsync(
+        IntPtr targetHwnd,
+        int x,
+        int y,
+        int delta,
+        CancellationToken ct)
+    {
+        return Task.Run(() =>
+        {
+            if (delta == 0)
+            {
+                throw new CommandException(ErrorCodes.InvalidArgument, "Scroll delta must not be zero.");
+            }
+
+            var wheelData = (long)delta * WHEEL_DELTA;
+            if (wheelData is < int.MinValue or > int.MaxValue)
+            {
+                throw new CommandException(
+                    ErrorCodes.InvalidArgument,
+                    $"Scroll delta must be between {int.MinValue / WHEEL_DELTA} and {int.MaxValue / WHEEL_DELTA}.");
+            }
+
+            ValidateVirtualDesktopCoordinate(x, y);
+            var validation = _targetValidator.ValidatePointerTarget(targetHwnd, x, y);
+            var inputs = new[]
+            {
+                CreateMouseInput(x, y, (uint)(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE), 0),
+                CreateMouseInput(x, y, (uint)(MOUSEEVENTF_WHEEL | MOUSEEVENTF_ABSOLUTE), (int)wheelData)
+            };
+
+            EnsureInjectionCompleted(inputs);
+
+            return new ScrollResult
+            {
+                X = x,
+                Y = y,
+                Delta = delta,
+                Interaction = CreateMouseInteraction(validation)
+            };
+        }, ct);
+    }
+
+    public Task<DragResult> DragAsync(
+        IntPtr targetHwnd,
+        int fromX,
+        int fromY,
+        int toX,
+        int toY,
+        CancellationToken ct)
+    {
+        return Task.Run(() =>
+        {
+            ValidateVirtualDesktopCoordinate(fromX, fromY);
+            ValidateVirtualDesktopCoordinate(toX, toY);
+            var fromValidation = _targetValidator.ValidatePointerTarget(targetHwnd, fromX, fromY);
+            _targetValidator.ValidatePointerTarget(targetHwnd, toX, toY);
+            var inputs = new[]
+            {
+                CreateMouseInput(fromX, fromY, (uint)(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE), 0),
+                CreateMouseInput(fromX, fromY, (uint)(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE), 0),
+                CreateMouseInput(toX, toY, (uint)(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE), 0),
+                CreateMouseInput(toX, toY, (uint)(MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE), 0)
+            };
+
+            EnsureInjectionCompleted(inputs, injectedCount => injectedCount switch
+            {
+                2 => CreateMouseInput(fromX, fromY, (uint)(MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE), 0),
+                3 => CreateMouseInput(toX, toY, (uint)(MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE), 0),
+                _ => null
+            });
+
+            return new DragResult
+            {
+                FromX = fromX,
+                FromY = fromY,
+                ToX = toX,
+                ToY = toY,
+                Interaction = CreateMouseInteraction(fromValidation)
+            };
+        }, ct);
+    }
+
     public Task<TypeTextResult> TypeTextAsync(TypeTextOptions options, CancellationToken ct)
     {
         return Task.Run(() =>
@@ -378,6 +520,58 @@ public class Win32InputBackend : IInputBackend, IDisposable
 
     private static string? FormatOptionalHwnd(IntPtr? hwnd) =>
         hwnd.HasValue && hwnd.Value != IntPtr.Zero ? FormatHwnd(hwnd.Value) : null;
+
+    private static void ValidateVirtualDesktopCoordinate(int x, int y)
+    {
+        int vScreenX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int vScreenY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vScreenW = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int vScreenH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+        if (x < vScreenX || x >= vScreenX + vScreenW ||
+            y < vScreenY || y >= vScreenY + vScreenH)
+        {
+            throw new CommandException(ErrorCodes.InvalidArgument,
+                $"Coordinate ({x},{y}) is outside the virtual desktop ({vScreenX},{vScreenY})–({vScreenX + vScreenW},{vScreenY + vScreenH}).");
+        }
+    }
+
+    private void EnsureInjectionCompleted(
+        INPUT[] inputs,
+        Func<uint, INPUT?>? recoveryInputFactory = null)
+    {
+        uint result = _inputInjector.SendInput(inputs);
+        if (result != inputs.Length)
+        {
+            var recoveryInput = recoveryInputFactory?.Invoke(result);
+            if (recoveryInput.HasValue)
+            {
+                try
+                {
+                    _inputInjector.SendInput([recoveryInput.Value]);
+                }
+                catch
+                {
+                    // Preserve the original injection failure after best-effort button release.
+                }
+            }
+
+            throw new CommandException(
+                ErrorCodes.InputInjectionFailed,
+                $"SendInput injected {result} of {inputs.Length} events. GetLastError: {Marshal.GetLastWin32Error()}");
+        }
+    }
+
+    private static InteractionResult CreateMouseInteraction(PhysicalInputTargetValidation validation) =>
+        new()
+        {
+            ModeRequested = "physical",
+            ModeActual = "sendinput-mouse",
+            PhysicalInputGenerated = true,
+            TargetHwnd = FormatHwnd(validation.TargetHwnd),
+            TargetForegroundVerified = validation.ForegroundVerified,
+            TargetDeliveryVerified = validation.DeliveryVerified
+        };
 
     private static INPUT CreateMouseInput(int x, int y, uint flags, int data)
     {

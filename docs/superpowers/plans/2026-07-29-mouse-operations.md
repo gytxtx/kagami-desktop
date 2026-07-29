@@ -84,7 +84,7 @@ public Task<MouseScrollResult> ScrollAsync(IntPtr targetHwnd, int x, int y, int 
 public Task<MouseDragResult> DragAsync(IntPtr targetHwnd, int fromX, int fromY, int toX, int toY, CancellationToken ct);
 ```
 
-新增共享的虚拟桌面坐标检查。每个方法先检查所有坐标，再调用 `ValidatePointerTarget`；drag 对两个点都检查后才注入。注入数组：move `[MOVE]`、双击 `[MOVE, DOWN, UP, DOWN, UP]`、滚轮 `[MOVE, WHEEL]`、拖拽 `[MOVE(from), LEFTDOWN(from), MOVE(to), LEFTUP(to)]`。新增 `MOUSEEVENTF_WHEEL = 0x0800` 与 `WHEEL_DELTA = 120`，滚轮 `mouseData = delta * WHEEL_DELTA`；零值抛出 `InvalidArgument`。`SendInput` 返回数必须等于数组长度，否则 `InputInjectionFailed`。
+新增共享的虚拟桌面坐标检查。每个方法先检查所有坐标，再调用 `ValidatePointerTarget`；drag 对两个点都检查后才注入。注入数组：move `[MOVE]`、双击 `[MOVE, DOWN, UP, DOWN, UP]`、滚轮 `[MOVE, WHEEL]`、拖拽 `[MOVE(from), LEFTDOWN(from), MOVE(to), LEFTUP(to)]`。新增 `MOUSEEVENTF_WHEEL = 0x0800` 与 `WHEEL_DELTA = 120`；滚轮先以宽整数计算 `delta * WHEEL_DELTA`，零值或无法装入 Win32 32 位有符号 `mouseData` 的值抛出 `InvalidArgument`，之后再窄化并注入。`SendInput` 返回数必须等于数组长度，否则 `InputInjectionFailed`。
 
 - [ ] **Step 4: 确认 GREEN**
 

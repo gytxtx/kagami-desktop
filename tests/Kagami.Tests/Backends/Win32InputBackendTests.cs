@@ -46,6 +46,362 @@ public class Win32InputBackendTests
     }
 
     [Fact]
+    public void Move_WithValidTarget_InjectsSingleMoveAndReportsVerification()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.MoveAsync(target, 100, 100, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal([1], injector.InputCounts);
+        Assert.Equal(MouseFlags(NativeMethods.MOUSEEVENTF_MOVE), injector.Inputs[0][0].u.mi.dwFlags);
+        Assert.Equal(100, result.X);
+        Assert.Equal(100, result.Y);
+        Assert.True(result.Interaction.TargetForegroundVerified);
+        Assert.True(result.Interaction.TargetDeliveryVerified);
+    }
+
+    [Theory]
+    [InlineData(false, NativeMethods.MOUSEEVENTF_LEFTDOWN, NativeMethods.MOUSEEVENTF_LEFTUP)]
+    [InlineData(true, NativeMethods.MOUSEEVENTF_RIGHTDOWN, NativeMethods.MOUSEEVENTF_RIGHTUP)]
+    public void DoubleClick_WithValidTarget_InjectsExactEventSequence(
+        bool rightButton,
+        int downFlag,
+        int upFlag)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.DoubleClickAsync(target, 100, 100, rightButton, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal([5], injector.InputCounts);
+        Assert.Equal(rightButton, result.RightButton);
+        Assert.True(result.Interaction.PhysicalInputGenerated);
+        Assert.Equal(
+            [
+                MouseFlags(NativeMethods.MOUSEEVENTF_MOVE),
+                MouseFlags(downFlag),
+                MouseFlags(upFlag),
+                MouseFlags(downFlag),
+                MouseFlags(upFlag)
+            ],
+            injector.Inputs[0].Select(input => input.u.mi.dwFlags));
+    }
+
+    [Fact]
+    public void Scroll_WithValidTarget_InjectsMoveAndWheel()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.ScrollAsync(target, 100, 100, -2, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal([2], injector.InputCounts);
+        Assert.Equal(-2, result.Delta);
+        Assert.Equal(-2 * NativeMethods.WHEEL_DELTA, injector.Inputs[0][1].u.mi.mouseData);
+        Assert.Equal(MouseFlags(NativeMethods.MOUSEEVENTF_MOVE), injector.Inputs[0][0].u.mi.dwFlags);
+        Assert.Equal(MouseFlags(NativeMethods.MOUSEEVENTF_WHEEL), injector.Inputs[0][1].u.mi.dwFlags);
+    }
+
+    [Fact]
+    public void Drag_WithValidTarget_InjectsFourEvents()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.DragAsync(target, 100, 100, 200, 200, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal([4], injector.InputCounts);
+        Assert.Equal((100, 100, 200, 200), (result.FromX, result.FromY, result.ToX, result.ToY));
+        Assert.Equal(
+            [
+                MouseFlags(NativeMethods.MOUSEEVENTF_MOVE),
+                MouseFlags(NativeMethods.MOUSEEVENTF_LEFTDOWN),
+                MouseFlags(NativeMethods.MOUSEEVENTF_MOVE),
+                MouseFlags(NativeMethods.MOUSEEVENTF_LEFTUP)
+            ],
+            injector.Inputs[0].Select(input => input.u.mi.dwFlags));
+        AssertNormalizedCoordinates(injector.Inputs[0][0], 100, 100);
+        AssertNormalizedCoordinates(injector.Inputs[0][1], 100, 100);
+        AssertNormalizedCoordinates(injector.Inputs[0][2], 200, 200);
+        AssertNormalizedCoordinates(injector.Inputs[0][3], 200, 200);
+    }
+
+    [Fact]
+    public void DoubleClick_WhenPointerTargetValidationFails_DoesNotInject()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(DifferentForegroundWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.DoubleClickAsync(target, 100, 100, false, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.ForegroundActivationDenied, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Fact]
+    public void EveryGesture_WhenPointerTargetValidationFails_DoesNotInject()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(DifferentForegroundWindows(target), injector);
+
+        var gestures = new Action[]
+        {
+            () => fixture.Input.MoveAsync(target, 100, 100, CancellationToken.None).GetAwaiter().GetResult(),
+            () => fixture.Input.DoubleClickAsync(target, 100, 100, false, CancellationToken.None).GetAwaiter().GetResult(),
+            () => fixture.Input.ScrollAsync(target, 100, 100, 1, CancellationToken.None).GetAwaiter().GetResult(),
+            () => fixture.Input.DragAsync(target, 100, 100, 200, 200, CancellationToken.None).GetAwaiter().GetResult()
+        };
+
+        foreach (var gesture in gestures)
+        {
+            var exception = Assert.Throws<CommandException>(gesture);
+            Assert.Equal(ErrorCodes.ForegroundActivationDenied, exception.ErrorCode);
+        }
+
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Fact]
+    public void EveryGesture_WhenPointIsOutsideTargetFamily_DoesNotInject()
+    {
+        var target = new IntPtr(100);
+        var otherWindow = new IntPtr(200);
+        var windows = new FakeWindowSystem
+        {
+            ForegroundWindow = target,
+            WindowAtPoint = otherWindow
+        };
+        windows.ProcessIds[target] = 10;
+        windows.ProcessIds[otherWindow] = 20;
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(windows, injector);
+
+        var gestures = new Action[]
+        {
+            () => fixture.Input.MoveAsync(target, 100, 100, CancellationToken.None).GetAwaiter().GetResult(),
+            () => fixture.Input.DoubleClickAsync(target, 100, 100, false, CancellationToken.None).GetAwaiter().GetResult(),
+            () => fixture.Input.ScrollAsync(target, 100, 100, 1, CancellationToken.None).GetAwaiter().GetResult(),
+            () => fixture.Input.DragAsync(target, 100, 100, 200, 200, CancellationToken.None).GetAwaiter().GetResult()
+        };
+
+        foreach (var gesture in gestures)
+        {
+            var exception = Assert.Throws<CommandException>(gesture);
+            Assert.Equal(ErrorCodes.PointNotInTarget, exception.ErrorCode);
+        }
+
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Fact]
+    public void EveryGesture_WithOutOfBoundsCoordinate_DoesNotInject()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var gestures = new Action[]
+        {
+            () => fixture.Input.MoveAsync(target, int.MaxValue, 100, CancellationToken.None).GetAwaiter().GetResult(),
+            () => fixture.Input.DoubleClickAsync(target, int.MaxValue, 100, false, CancellationToken.None).GetAwaiter().GetResult(),
+            () => fixture.Input.ScrollAsync(target, int.MaxValue, 100, 1, CancellationToken.None).GetAwaiter().GetResult(),
+            () => fixture.Input.DragAsync(target, 100, 100, int.MaxValue, 100, CancellationToken.None).GetAwaiter().GetResult()
+        };
+
+        foreach (var gesture in gestures)
+        {
+            var exception = Assert.Throws<CommandException>(gesture);
+            Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
+        }
+
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Fact]
+    public void Drag_WithOutOfBoundsStart_FailsBeforeInjection()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.DragAsync(target, int.MaxValue, 100, 200, 200, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Fact]
+    public void Scroll_WithZeroDelta_FailsBeforeInjection()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.ScrollAsync(target, 100, 100, 0, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Theory]
+    [InlineData(int.MaxValue)]
+    [InlineData(int.MinValue)]
+    public void Scroll_WhenWheelDeltaConversionWouldOverflow_FailsBeforeInjection(int delta)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.ScrollAsync(target, 100, 100, delta, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Theory]
+    [InlineData(17895697, 2147483640)]
+    [InlineData(-17895697, -2147483640)]
+    public void Scroll_WithLargestConvertibleDelta_PreservesDirection(int delta, int expectedWheelData)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.ScrollAsync(target, 100, 100, delta, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(delta, result.Delta);
+        Assert.Equal(expectedWheelData, injector.Inputs[0][1].u.mi.mouseData);
+    }
+
+    [Fact]
+    public void Drag_WhenEndPointerTargetValidationFails_DoesNotInject()
+    {
+        var target = new IntPtr(100);
+        var otherWindow = new IntPtr(200);
+        var windows = ValidTargetWindows(target);
+        windows.WindowAtPoints[(200, 200)] = otherWindow;
+        windows.ProcessIds[otherWindow] = 20;
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(windows, injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.DragAsync(target, 100, 100, 200, 200, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.PointNotInTarget, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Theory]
+    [InlineData(0u, 0u, 1)]
+    [InlineData(2u, 0u, 2)]
+    [InlineData(3u, 0u, 2)]
+    public void Drag_WithPartialInjection_ReleasesButtonAndFails(
+        uint injectedCount,
+        uint cleanupInjectedCount,
+        int expectedCalls)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector(injectedCount, cleanupInjectedCount);
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.DragAsync(target, 100, 100, 200, 200, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InputInjectionFailed, exception.ErrorCode);
+        Assert.Equal(expectedCalls, injector.Calls);
+        Assert.Equal(expectedCalls == 1 ? [4] : [4, 1], injector.InputCounts);
+
+        if (expectedCalls == 2)
+        {
+            Assert.Equal(MouseFlags(NativeMethods.MOUSEEVENTF_LEFTUP), injector.Inputs[1][0].u.mi.dwFlags);
+        }
+    }
+
+    [Theory]
+    [InlineData(0u, 0u, 1)]
+    [InlineData(2u, 0u, 2)]
+    [InlineData(4u, 0u, 2)]
+    public void DoubleClick_WithPartialInjection_ReleasesButtonAndFails(
+        uint injectedCount,
+        uint cleanupInjectedCount,
+        int expectedCalls)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector(injectedCount, cleanupInjectedCount);
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.DoubleClickAsync(target, 100, 100, false, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InputInjectionFailed, exception.ErrorCode);
+        Assert.Equal(expectedCalls, injector.Calls);
+        Assert.Equal(expectedCalls == 1 ? [5] : [5, 1], injector.InputCounts);
+
+        if (expectedCalls == 2)
+        {
+            Assert.Equal(MouseFlags(NativeMethods.MOUSEEVENTF_LEFTUP), injector.Inputs[1][0].u.mi.dwFlags);
+        }
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    public void Move_WithPartialInjection_Fails(uint injectedCount)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector(injectedCount);
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.MoveAsync(target, 100, 100, CancellationToken.None).GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InputInjectionFailed, exception.ErrorCode);
+        Assert.Equal([1], injector.InputCounts);
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(1u)]
+    public void Scroll_WithPartialInjection_Fails(uint injectedCount)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector(injectedCount);
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.ScrollAsync(target, 100, 100, 1, CancellationToken.None).GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InputInjectionFailed, exception.ErrorCode);
+        Assert.Equal([2], injector.InputCounts);
+    }
+
+    [Fact]
     public void Key_WhenKeyboardTargetValidationFails_DoesNotInject()
     {
         var target = new IntPtr(100);
@@ -246,6 +602,22 @@ public class Win32InputBackendTests
         return windows;
     }
 
+    private static int MouseFlags(int flags) =>
+        flags | NativeMethods.MOUSEEVENTF_ABSOLUTE | NativeMethods.MOUSEEVENTF_VIRTUALDESK;
+
+    private static void AssertNormalizedCoordinates(NativeMethods.INPUT input, int x, int y)
+    {
+        int screenWidth = NativeMethods.GetSystemMetrics(NativeMethods.SM_CXVIRTUALSCREEN);
+        int screenHeight = NativeMethods.GetSystemMetrics(NativeMethods.SM_CYVIRTUALSCREEN);
+        int screenX = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
+        int screenY = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);
+        int expectedX = screenWidth > 0 ? (int)((long)(x - screenX) * 65535 / (screenWidth - 1)) : 0;
+        int expectedY = screenHeight > 0 ? (int)((long)(y - screenY) * 65535 / (screenHeight - 1)) : 0;
+
+        Assert.Equal(Math.Clamp(expectedX, 0, 65535), input.u.mi.dx);
+        Assert.Equal(Math.Clamp(expectedY, 0, 65535), input.u.mi.dy);
+    }
+
     private static FakeWindowSystem ValidTargetWindows(IntPtr target)
     {
         var windows = new FakeWindowSystem
@@ -295,11 +667,13 @@ public class Win32InputBackendTests
 
         public int Calls { get; private set; }
         public List<int> InputCounts { get; } = [];
+        public List<NativeMethods.INPUT[]> Inputs { get; } = [];
 
         public uint SendInput(NativeMethods.INPUT[] inputs)
         {
             Calls++;
             InputCounts.Add(inputs.Length);
+            Inputs.Add(inputs);
             return _results.TryDequeue(out var result) ? result : (uint)inputs.Length;
         }
     }
@@ -323,12 +697,14 @@ public class Win32InputBackendTests
     {
         public IntPtr ForegroundWindow { get; init; }
         public IntPtr WindowAtPoint { get; init; }
+        public Dictionary<(int X, int Y), IntPtr> WindowAtPoints { get; } = [];
         public Dictionary<IntPtr, IntPtr> Parents { get; } = [];
         public Dictionary<IntPtr, IntPtr> Owners { get; } = [];
         public Dictionary<IntPtr, int> ProcessIds { get; } = [];
 
         public IntPtr GetForegroundWindow() => ForegroundWindow;
-        public IntPtr WindowFromPoint(int x, int y) => WindowAtPoint;
+        public IntPtr WindowFromPoint(int x, int y) =>
+            WindowAtPoints.TryGetValue((x, y), out var hwnd) ? hwnd : WindowAtPoint;
         public IntPtr GetParent(IntPtr hwnd) => Parents.GetValueOrDefault(hwnd);
         public IntPtr GetOwner(IntPtr hwnd) => Owners.GetValueOrDefault(hwnd);
         public int GetProcessId(IntPtr hwnd) => ProcessIds.GetValueOrDefault(hwnd);

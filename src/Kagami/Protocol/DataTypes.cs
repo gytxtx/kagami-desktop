@@ -112,6 +112,9 @@ public class CapabilitiesData
     [JsonPropertyName("uia")]
     public UiaCapabilityInfo Uia { get; init; } = new();
 
+    [JsonPropertyName("mouse_commands")]
+    public List<string> MouseCommands { get; init; } = new();
+
     [JsonPropertyName("elevated")]
     public bool Elevated { get; init; }
 

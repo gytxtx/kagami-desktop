@@ -69,6 +69,67 @@ public class InteractionCommandsTests
             response.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
 
+    [Theory]
+    [InlineData("move")]
+    [InlineData("double-click")]
+    [InlineData("scroll")]
+    [InlineData("drag")]
+    public async Task PhysicalMouseCommand_WithoutHwndOrGuard_FailsWithoutCallingBackend(string command)
+    {
+        var input = new RecordingInputBackend();
+        var commands = CreateCommands(input);
+
+        var (exitCode, output) = await CaptureOutputAsync(
+            () => ExecutePhysicalMouseCommandAsync(commands, command, null, null));
+
+        Assert.NotEqual(0, exitCode);
+        Assert.Equal(0, input.GetMouseCalls(command));
+        using var response = JsonDocument.Parse(output);
+        Assert.Equal(
+            ErrorCodes.InvalidArgument,
+            response.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Theory]
+    [InlineData("move")]
+    [InlineData("double-click")]
+    [InlineData("scroll")]
+    [InlineData("drag")]
+    public async Task PhysicalMouseCommand_WithValidatedGuard_DerivesTargetHwnd(string command)
+    {
+        var input = new RecordingInputBackend();
+        var guardStore = new StubGuardStore { Result = ValidGuard("0x1234") };
+        var commands = CreateCommands(input, guardStore);
+
+        var exitCode = await ExecutePhysicalMouseCommandAsync(commands, command, null, "guard.json");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, input.GetMouseCalls(command));
+        Assert.Equal(new IntPtr(0x1234), input.GetMouseTarget(command));
+    }
+
+    [Theory]
+    [InlineData("move")]
+    [InlineData("double-click")]
+    [InlineData("scroll")]
+    [InlineData("drag")]
+    public async Task PhysicalMouseCommand_WithConflictingExplicitAndGuardHwnd_FailsWithoutCallingBackend(string command)
+    {
+        var input = new RecordingInputBackend();
+        var guardStore = new StubGuardStore { Result = ValidGuard("0x1234") };
+        var commands = CreateCommands(input, guardStore);
+
+        var (exitCode, output) = await CaptureOutputAsync(
+            () => ExecutePhysicalMouseCommandAsync(commands, command, "0x5678", "guard.json"));
+
+        Assert.NotEqual(0, exitCode);
+        Assert.Equal(0, input.GetMouseCalls(command));
+        using var response = JsonDocument.Parse(output);
+        Assert.Equal(
+            ErrorCodes.StaleObservation,
+            response.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
     [Fact]
     public async Task Key_WithoutHwnd_FailsWithoutCallingBackend()
     {
@@ -118,6 +179,19 @@ public class InteractionCommandsTests
         Guard = new ObservationGuard { Hwnd = hwnd }
     };
 
+    private static Task<int> ExecutePhysicalMouseCommandAsync(
+        InteractionCommands commands,
+        string command,
+        string? hwnd,
+        string? expectedStatePath) => command switch
+    {
+        "move" => commands.MoveAsync(100, 200, hwnd, expectedStatePath),
+        "double-click" => commands.DoubleClickAsync(100, 200, false, hwnd, expectedStatePath),
+        "scroll" => commands.ScrollAsync(100, 200, -2, hwnd, expectedStatePath),
+        "drag" => commands.DragAsync(100, 200, 300, 400, hwnd, expectedStatePath),
+        _ => throw new ArgumentOutOfRangeException(nameof(command), command, null)
+    };
+
     private static async Task<(int ExitCode, string Output)> CaptureOutputAsync(Func<Task<int>> action)
     {
         var originalOut = Console.Out;
@@ -140,7 +214,33 @@ public class InteractionCommandsTests
         public int KeyCalls { get; private set; }
         public int TypeTextCalls { get; private set; }
         public IntPtr? ClickTargetHwnd { get; private set; }
+        public int MoveCalls { get; private set; }
+        public int DoubleClickCalls { get; private set; }
+        public int ScrollCalls { get; private set; }
+        public int DragCalls { get; private set; }
+        public IntPtr? MoveTargetHwnd { get; private set; }
+        public IntPtr? DoubleClickTargetHwnd { get; private set; }
+        public IntPtr? ScrollTargetHwnd { get; private set; }
+        public IntPtr? DragTargetHwnd { get; private set; }
         public TypeTextOptions? LastTypeTextOptions { get; private set; }
+
+        public int GetMouseCalls(string command) => command switch
+        {
+            "move" => MoveCalls,
+            "double-click" => DoubleClickCalls,
+            "scroll" => ScrollCalls,
+            "drag" => DragCalls,
+            _ => throw new ArgumentOutOfRangeException(nameof(command), command, null)
+        };
+
+        public IntPtr? GetMouseTarget(string command) => command switch
+        {
+            "move" => MoveTargetHwnd,
+            "double-click" => DoubleClickTargetHwnd,
+            "scroll" => ScrollTargetHwnd,
+            "drag" => DragTargetHwnd,
+            _ => throw new ArgumentOutOfRangeException(nameof(command), command, null)
+        };
 
         public Task<InvokeResult> InvokeAsync(Locator locator, CancellationToken ct) =>
             throw new NotSupportedException();
@@ -159,6 +259,55 @@ public class InteractionCommandsTests
                 X = x,
                 Y = y,
                 RightButton = rightButton,
+                Interaction = new InteractionResult()
+            });
+        }
+
+        public Task<MoveResult> MoveAsync(IntPtr targetHwnd, int x, int y, CancellationToken ct)
+        {
+            MoveCalls++;
+            MoveTargetHwnd = targetHwnd;
+            return Task.FromResult(new MoveResult { X = x, Y = y, Interaction = new InteractionResult() });
+        }
+
+        public Task<DoubleClickResult> DoubleClickAsync(
+            IntPtr targetHwnd, int x, int y, bool rightButton, CancellationToken ct)
+        {
+            DoubleClickCalls++;
+            DoubleClickTargetHwnd = targetHwnd;
+            return Task.FromResult(new DoubleClickResult
+            {
+                X = x,
+                Y = y,
+                RightButton = rightButton,
+                Interaction = new InteractionResult()
+            });
+        }
+
+        public Task<ScrollResult> ScrollAsync(IntPtr targetHwnd, int x, int y, int delta, CancellationToken ct)
+        {
+            ScrollCalls++;
+            ScrollTargetHwnd = targetHwnd;
+            return Task.FromResult(new ScrollResult
+            {
+                X = x,
+                Y = y,
+                Delta = delta,
+                Interaction = new InteractionResult()
+            });
+        }
+
+        public Task<DragResult> DragAsync(
+            IntPtr targetHwnd, int fromX, int fromY, int toX, int toY, CancellationToken ct)
+        {
+            DragCalls++;
+            DragTargetHwnd = targetHwnd;
+            return Task.FromResult(new DragResult
+            {
+                FromX = fromX,
+                FromY = fromY,
+                ToX = toX,
+                ToY = toY,
                 Interaction = new InteractionResult()
             });
         }

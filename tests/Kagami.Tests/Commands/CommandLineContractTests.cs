@@ -51,6 +51,23 @@ public class CommandLineContractTests
         Assert.True(string.IsNullOrWhiteSpace(result.Stderr), result.Stderr);
     }
 
+    [Fact]
+    public async Task Capabilities_ReportsAllPhysicalMouseCommands()
+    {
+        var result = await InvokeCli("capabilities");
+
+        Assert.Equal(0, result.ExitCode);
+        using var response = JsonDocument.Parse(result.Stdout);
+        var data = response.RootElement.GetProperty("data");
+        Assert.True(data.TryGetProperty("capture_backends", out _));
+        Assert.True(data.TryGetProperty("uia", out _));
+        Assert.Equal(
+            ["move", "double-click", "scroll", "drag"],
+            data.GetProperty("mouse_commands")
+                .EnumerateArray()
+                .Select(command => command.GetString()));
+    }
+
     [Theory]
     [InlineData("wait-for", "element", "--locator", "{}")]
     [InlineData("wait-for", "--condition", "element", "--locator", "{}")]
@@ -96,6 +113,71 @@ public class CommandLineContractTests
             ErrorCodes.InvalidArgument,
             response.RootElement.GetProperty("error").GetProperty("code").GetString());
         Assert.NotEmpty(result.Stderr);
+    }
+
+    [Theory]
+    [InlineData("move", "--x", "100", "--y", "200", "--hwnd", "0x1234", "--expected-state", "test.guard")]
+    [InlineData("double-click", "--x", "100", "--y", "200", "--right", "--hwnd", "0x1234", "--expected-state", "test.guard")]
+    [InlineData("scroll", "--x", "100", "--y", "200", "--delta", "-2", "--hwnd", "0x1234", "--expected-state", "test.guard")]
+    [InlineData("drag", "--from-x", "100", "--from-y", "200", "--to-x", "300", "--to-y", "400", "--hwnd", "0x1234", "--expected-state", "test.guard")]
+    public async Task MouseCommands_CompleteArguments_AreRecognized(params string[] args)
+    {
+        var result = await InvokeCli(args);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("test.guard", result.LastValidatedGuardPath);
+        using var response = JsonDocument.Parse(result.Stdout);
+        Assert.True(response.RootElement.GetProperty("success").GetBoolean());
+        var data = response.RootElement.GetProperty("data");
+        Assert.Equal("0x1234", data.GetProperty("interaction").GetProperty("target_hwnd").GetString());
+
+        switch (args[0])
+        {
+            case "move":
+                Assert.Equal(100, data.GetProperty("x").GetInt32());
+                Assert.Equal(200, data.GetProperty("y").GetInt32());
+                break;
+            case "double-click":
+                Assert.Equal(100, data.GetProperty("x").GetInt32());
+                Assert.Equal(200, data.GetProperty("y").GetInt32());
+                Assert.True(data.GetProperty("rightButton").GetBoolean());
+                break;
+            case "scroll":
+                Assert.Equal(100, data.GetProperty("x").GetInt32());
+                Assert.Equal(200, data.GetProperty("y").GetInt32());
+                Assert.Equal(-2, data.GetProperty("delta").GetInt32());
+                break;
+            case "drag":
+                Assert.Equal(100, data.GetProperty("fromX").GetInt32());
+                Assert.Equal(200, data.GetProperty("fromY").GetInt32());
+                Assert.Equal(300, data.GetProperty("toX").GetInt32());
+                Assert.Equal(400, data.GetProperty("toY").GetInt32());
+                break;
+        }
+    }
+
+    [Theory]
+    [InlineData("move", "--y", "200")]
+    [InlineData("move", "--x", "100")]
+    [InlineData("double-click", "--y", "200")]
+    [InlineData("double-click", "--x", "100")]
+    [InlineData("scroll", "--y", "200", "--delta", "-2")]
+    [InlineData("scroll", "--x", "100", "--delta", "-2")]
+    [InlineData("scroll", "--x", "100", "--y", "200")]
+    [InlineData("drag", "--from-y", "200", "--to-x", "300", "--to-y", "400")]
+    [InlineData("drag", "--from-x", "100", "--to-x", "300", "--to-y", "400")]
+    [InlineData("drag", "--from-x", "100", "--from-y", "200", "--to-y", "400")]
+    [InlineData("drag", "--from-x", "100", "--from-y", "200", "--to-x", "300")]
+    public async Task MouseCommands_MissingRequiredOption_IsRejected(params string[] args)
+    {
+        var result = await InvokeCli(args);
+
+        Assert.Equal(2, result.ExitCode);
+        using var response = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("parse", response.RootElement.GetProperty("command").GetString());
+        Assert.Equal(
+            ErrorCodes.InvalidArgument,
+            response.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
 
     [Fact]
@@ -208,13 +290,14 @@ public class CommandLineContractTests
             Console.SetOut(stdout);
             Console.SetError(stderr);
 
+            var guardStore = new StubObservationGuardStore();
             var rootCommand = Kagami.Program.BuildRootCommand(
                 new StubAutomationBackend(),
                 new StubInputBackend(),
                 new CaptureService(),
-                new StubObservationGuardStore());
+                guardStore);
             var exitCode = await Kagami.Program.InvokeAsync(rootCommand, args);
-            return new CliResult(exitCode, stdout.ToString(), stderr.ToString());
+            return new CliResult(exitCode, stdout.ToString(), stderr.ToString(), guardStore.LastValidatedPath);
         }
         finally
         {
@@ -239,7 +322,7 @@ public class CommandLineContractTests
         }
     }
 
-    private sealed record CliResult(int ExitCode, string Stdout, string Stderr);
+    private sealed record CliResult(int ExitCode, string Stdout, string Stderr, string? LastValidatedGuardPath);
 
     private sealed class StubAutomationBackend : IAutomationBackend
     {
@@ -278,6 +361,56 @@ public class CommandLineContractTests
             bool rightButton,
             CancellationToken ct) => throw new NotSupportedException();
 
+        public Task<MoveResult> MoveAsync(IntPtr targetHwnd, int x, int y, CancellationToken ct) =>
+            Task.FromResult(new MoveResult { X = x, Y = y, Interaction = PhysicalInteraction(targetHwnd) });
+
+        public Task<DoubleClickResult> DoubleClickAsync(
+            IntPtr targetHwnd,
+            int x,
+            int y,
+            bool rightButton,
+            CancellationToken ct) =>
+            Task.FromResult(new DoubleClickResult
+            {
+                X = x,
+                Y = y,
+                RightButton = rightButton,
+                Interaction = PhysicalInteraction(targetHwnd)
+            });
+
+        public Task<ScrollResult> ScrollAsync(
+            IntPtr targetHwnd,
+            int x,
+            int y,
+            int delta,
+            CancellationToken ct) =>
+            Task.FromResult(new ScrollResult
+            {
+                X = x,
+                Y = y,
+                Delta = delta,
+                Interaction = PhysicalInteraction(targetHwnd)
+            });
+
+        public Task<DragResult> DragAsync(
+            IntPtr targetHwnd,
+            int fromX,
+            int fromY,
+            int toX,
+            int toY,
+            CancellationToken ct) =>
+            Task.FromResult(new DragResult
+            {
+                FromX = fromX,
+                FromY = fromY,
+                ToX = toX,
+                ToY = toY,
+                Interaction = PhysicalInteraction(targetHwnd)
+            });
+
+        private static InteractionResult PhysicalInteraction(IntPtr targetHwnd) =>
+            new() { TargetHwnd = UiaAutomationBackend.FormatHwnd(targetHwnd) };
+
         public Task<TypeTextResult> TypeTextAsync(TypeTextOptions options, CancellationToken ct) =>
             throw new NotSupportedException();
 
@@ -290,11 +423,20 @@ public class CommandLineContractTests
 
     private sealed class StubObservationGuardStore : IObservationGuardStore
     {
+        public string? LastValidatedPath { get; private set; }
+
         public Task<string> SaveAsync(ObservationGuard guard, CancellationToken ct) =>
             Task.FromResult("test.guard");
 
-        public Task<GuardValidationResult> LoadAndValidateAsync(string guardPath, CancellationToken ct) =>
-            throw new NotSupportedException();
+        public Task<GuardValidationResult> LoadAndValidateAsync(string guardPath, CancellationToken ct)
+        {
+            LastValidatedPath = guardPath;
+            return Task.FromResult(new GuardValidationResult
+            {
+                Valid = true,
+                Guard = new ObservationGuard { Hwnd = "0x1234" }
+            });
+        }
 
         public Task CleanupExpiredAsync(CancellationToken ct) => Task.CompletedTask;
     }

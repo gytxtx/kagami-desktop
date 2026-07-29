@@ -40,7 +40,7 @@ double-click --hwnd X --x X --y Y [--right] [--expected-state guard-uuid.json]
 scroll --hwnd X --x X --y Y --delta D [--expected-state guard-uuid.json]
 ```
 
-先将指针移动到目标坐标，再发送垂直滚轮事件。正 `delta` 向上滚动，负值向下滚动；零值无意义，应拒绝。
+先将指针移动到目标坐标，再发送垂直滚轮事件。正 `delta` 向上滚动，负值向下滚动；有效范围为 `-17895697..17895697` 且不能为零。超出范围的值无法安全换算为 Win32 的 120 单位、32 位有符号滚轮数据，应在注入前以 `INVALID_ARGUMENT` 拒绝。
 
 ### `drag`
 
@@ -58,9 +58,9 @@ drag --hwnd X --from-x X --from-y Y --to-x X --to-y Y [--expected-state guard-uu
 
 ## 输出与测试
 
-每个命令返回其语义、实际执行路径、目标 HWND 和坐标；滚轮额外返回 delta，拖拽返回起点与终点。
+每个命令返回其语义、实际执行路径、目标 HWND 和坐标；滚轮额外返回 delta，拖拽返回起点与终点。`capabilities` 的 `mouse_commands` 数组列出 `move`、`double-click`、`scroll` 与 `drag`，供调用方进行机器可读的能力协商。
 
-测试覆盖 CLI 参数绑定、正确事件序列、零滚轮 delta 拒绝、前台拒绝、起点/终点命中拒绝及结构化响应。README、`docs/DESIGN.md` 与能力输出同步记录新命令。
+测试覆盖 CLI 参数绑定、正确事件序列、零滚轮 delta 与换算溢出拒绝、前台拒绝、起点/终点命中拒绝、capabilities 命令清单及结构化响应。README、`docs/DESIGN.md` 与能力输出同步记录新命令。
 
 ## 验收标准
 

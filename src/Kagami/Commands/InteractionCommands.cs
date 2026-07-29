@@ -91,38 +91,111 @@ public class InteractionCommands
 
         try
         {
-            ObservationGuard? guard = null;
-            if (expectedStatePath is not null)
-            {
-                var guardResult = await _guardStore.LoadAndValidateAsync(expectedStatePath, CancellationToken.None);
-                if (!guardResult.Valid)
-                    return writer.Fail(guardResult.FailureCode!, guardResult.FailureMessage!);
+            var target = await ResolvePhysicalMouseTargetAsync(hwndStr, expectedStatePath, writer, "click");
+            if (target.ExitCode.HasValue)
+                return target.ExitCode.Value;
 
-                guard = guardResult.Guard
-                    ?? throw new CommandException(
-                        ErrorCodes.StaleObservation,
-                        "Validated guard did not include target window metadata.");
-            }
+            var result = await _input.ClickAsync(target.Hwnd!.Value, x, y, rightButton, CancellationToken.None);
+            return writer.Success(result);
+        }
+        catch (CommandException ex)
+        {
+            return writer.Fail(ex.ErrorCode, ex.Message, ex.Retryable, ex.NativeCode,
+                details: new Dictionary<string, object?>(ex.Details), exitCode: ex.ExitCode);
+        }
+        catch (Exception ex)
+        {
+            return writer.FatalException(ex);
+        }
+    }
 
-            var explicitHwnd = ParseOptionalHwnd(hwndStr);
-            IntPtr? guardHwnd = guard is null ? null : ParseRequiredHwnd(guard.Hwnd, "guard HWND");
+    public async Task<int> MoveAsync(int x, int y, string? hwndStr, string? expectedStatePath)
+    {
+        var writer = new ResponseWriter("move");
 
-            if (explicitHwnd.HasValue && guardHwnd.HasValue && explicitHwnd.Value != guardHwnd.Value)
-            {
-                return writer.Fail(
-                    ErrorCodes.StaleObservation,
-                    $"Explicit HWND {FormatHwnd(explicitHwnd.Value)} does not match guard HWND {FormatHwnd(guardHwnd.Value)}.");
-            }
+        try
+        {
+            var target = await ResolvePhysicalMouseTargetAsync(hwndStr, expectedStatePath, writer, "move");
+            if (target.ExitCode.HasValue)
+                return target.ExitCode.Value;
 
-            var targetHwnd = explicitHwnd ?? guardHwnd;
-            if (!targetHwnd.HasValue)
-            {
-                return writer.Fail(
-                    ErrorCodes.InvalidArgument,
-                    "A target HWND or validated observation guard is required for physical click.");
-            }
+            var result = await _input.MoveAsync(target.Hwnd!.Value, x, y, CancellationToken.None);
+            return writer.Success(result);
+        }
+        catch (CommandException ex)
+        {
+            return writer.Fail(ex.ErrorCode, ex.Message, ex.Retryable, ex.NativeCode,
+                details: new Dictionary<string, object?>(ex.Details), exitCode: ex.ExitCode);
+        }
+        catch (Exception ex)
+        {
+            return writer.FatalException(ex);
+        }
+    }
 
-            var result = await _input.ClickAsync(targetHwnd.Value, x, y, rightButton, CancellationToken.None);
+    public async Task<int> DoubleClickAsync(
+        int x, int y, bool rightButton, string? hwndStr, string? expectedStatePath)
+    {
+        var writer = new ResponseWriter("double-click");
+
+        try
+        {
+            var target = await ResolvePhysicalMouseTargetAsync(hwndStr, expectedStatePath, writer, "double-click");
+            if (target.ExitCode.HasValue)
+                return target.ExitCode.Value;
+
+            var result = await _input.DoubleClickAsync(target.Hwnd!.Value, x, y, rightButton, CancellationToken.None);
+            return writer.Success(result);
+        }
+        catch (CommandException ex)
+        {
+            return writer.Fail(ex.ErrorCode, ex.Message, ex.Retryable, ex.NativeCode,
+                details: new Dictionary<string, object?>(ex.Details), exitCode: ex.ExitCode);
+        }
+        catch (Exception ex)
+        {
+            return writer.FatalException(ex);
+        }
+    }
+
+    public async Task<int> ScrollAsync(
+        int x, int y, int delta, string? hwndStr, string? expectedStatePath)
+    {
+        var writer = new ResponseWriter("scroll");
+
+        try
+        {
+            var target = await ResolvePhysicalMouseTargetAsync(hwndStr, expectedStatePath, writer, "scroll");
+            if (target.ExitCode.HasValue)
+                return target.ExitCode.Value;
+
+            var result = await _input.ScrollAsync(target.Hwnd!.Value, x, y, delta, CancellationToken.None);
+            return writer.Success(result);
+        }
+        catch (CommandException ex)
+        {
+            return writer.Fail(ex.ErrorCode, ex.Message, ex.Retryable, ex.NativeCode,
+                details: new Dictionary<string, object?>(ex.Details), exitCode: ex.ExitCode);
+        }
+        catch (Exception ex)
+        {
+            return writer.FatalException(ex);
+        }
+    }
+
+    public async Task<int> DragAsync(
+        int fromX, int fromY, int toX, int toY, string? hwndStr, string? expectedStatePath)
+    {
+        var writer = new ResponseWriter("drag");
+
+        try
+        {
+            var target = await ResolvePhysicalMouseTargetAsync(hwndStr, expectedStatePath, writer, "drag");
+            if (target.ExitCode.HasValue)
+                return target.ExitCode.Value;
+
+            var result = await _input.DragAsync(
+                target.Hwnd!.Value, fromX, fromY, toX, toY, CancellationToken.None);
             return writer.Success(result);
         }
         catch (CommandException ex)
@@ -242,6 +315,43 @@ public class InteractionCommands
             return (IntPtr)val;
 
         return IntPtr.Zero;
+    }
+
+    private async Task<(IntPtr? Hwnd, int? ExitCode)> ResolvePhysicalMouseTargetAsync(
+        string? hwndStr,
+        string? expectedStatePath,
+        ResponseWriter writer,
+        string command)
+    {
+        ObservationGuard? guard = null;
+        if (expectedStatePath is not null)
+        {
+            var guardResult = await _guardStore.LoadAndValidateAsync(expectedStatePath, CancellationToken.None);
+            if (!guardResult.Valid)
+                return (null, writer.Fail(guardResult.FailureCode!, guardResult.FailureMessage!));
+
+            guard = guardResult.Guard
+                ?? throw new CommandException(
+                    ErrorCodes.StaleObservation,
+                    "Validated guard did not include target window metadata.");
+        }
+
+        var explicitHwnd = ParseOptionalHwnd(hwndStr);
+        IntPtr? guardHwnd = guard is null ? null : ParseRequiredHwnd(guard.Hwnd, "guard HWND");
+
+        if (explicitHwnd.HasValue && guardHwnd.HasValue && explicitHwnd.Value != guardHwnd.Value)
+        {
+            return (null, writer.Fail(
+                ErrorCodes.StaleObservation,
+                $"Explicit HWND {FormatHwnd(explicitHwnd.Value)} does not match guard HWND {FormatHwnd(guardHwnd.Value)}."));
+        }
+
+        var targetHwnd = explicitHwnd ?? guardHwnd;
+        return targetHwnd.HasValue
+            ? (targetHwnd, null)
+            : (null, writer.Fail(
+                ErrorCodes.InvalidArgument,
+                $"A target HWND or validated observation guard is required for physical {command}."));
     }
 
     private static IntPtr? ParseOptionalHwnd(string? hwndStr) =>

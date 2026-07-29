@@ -141,6 +141,10 @@ screenshot      — 独立截图（窗口/区域/显示器）
 activate        — 尝试将窗口带到前台
 invoke          — 语义点击（UIA InvokePattern）
 click           — 物理鼠标坐标点击
+move            — 物理移动鼠标指针
+double-click    — 物理鼠标双击（可选右键）
+scroll          — 在物理坐标滚轮滚动
+drag            — 在物理坐标之间拖拽
 type-text       — 文本输入（--mode value|keyboard|auto，--allow-clipboard）
 key             — 组合键输入
 
@@ -149,7 +153,7 @@ wait-for        — 条件等待（element/element-gone/property/window/window-r
 
 根命令和子命令通过 `--help` 输出实际语法；默认 help 别名为 `-h`、`/h`、`-?`、`/?`，`--version` 输出程序集版本。help/version 成功时退出码为 0。
 
-推迟到 post-MVP：`focus`、`scroll`、`cleanup`。
+推迟到 post-MVP：`focus`、`cleanup`。
 
 ## 命令详解
 
@@ -167,6 +171,7 @@ wait-for        — 条件等待（element/element-gone/property/window/window-r
     "legacy_gdi": true
   },
   "uia": { "version": 3 },
+  "mouse_commands": ["move", "double-click", "scroll", "drag"],
   "elevated": false,
   "interactive_session": true
 }
@@ -274,6 +279,40 @@ click --hwnd X --x Y --y Y [--right] [--expected-state guard-uuid.json]
 ```
 
 物理鼠标点击（`SendInput`），屏幕物理坐标。`click` 必须通过显式 `--hwnd` 或已验证的 `--expected-state` guard 绑定目标；两者同时存在时必须一致。注入前目标窗口必须位于前台，且坐标必须命中同一窗口族。
+
+### `move`
+
+```
+move --hwnd X --x Y --y Y [--expected-state guard-uuid.json]
+```
+
+将鼠标指针移动到屏幕物理坐标。`move` 与其他物理鼠标操作一样，必须通过显式 `--hwnd` 或已验证的 `--expected-state` guard 绑定目标；注入前目标窗口必须位于前台，且 `--x`、`--y` 必须命中同一窗口族。
+
+### `double-click`
+
+```
+double-click --hwnd X --x Y --y Y [--right] [--expected-state guard-uuid.json]
+```
+
+在屏幕物理坐标执行左键双击；追加 `double-click --right` 时执行右键双击。注入前按相同的目标、前台和坐标命中契约验证 `--hwnd`（或 guard）与 `--x`、`--y`。
+
+### `scroll`
+
+```
+scroll --hwnd X --x Y --y Y --delta N [--expected-state guard-uuid.json]
+```
+
+在屏幕物理坐标滚动。`--delta` 必须在 `-17895697..17895697` 范围内且不能为零；正值向上滚动，负值向下滚动。Kagami 会先把 delta 换算为 Win32 的 120 单位滚轮数据，若结果无法装入 32 位有符号 `mouseData`，会在注入前返回 `INVALID_ARGUMENT`。通过参数校验后，再按相同的目标、前台和坐标命中契约验证 `--hwnd`（或 guard）与 `--x`、`--y`。
+
+### `drag`
+
+```
+drag --hwnd X --from-x X --from-y Y --to-x X --to-y Y [--expected-state guard-uuid.json]
+```
+
+拖拽事件顺序为：移动到起点 → 左键按下 → 移动到终点 → 左键释放。注入任何事件前，Kagami 先验证起点和终点都满足相同的目标、前台和坐标命中契约；任一端验证失败时不会注入按下事件，因此不会留下鼠标按下状态。
+
+所有物理鼠标操作的 `physical_input_generated: true` 仅表示输入已注入，不代表业务后置条件完成；输入后仍需以 fresh observation 或 `wait-for` 验证业务结果。
 
 ### `type-text`
 

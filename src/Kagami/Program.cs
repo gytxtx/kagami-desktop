@@ -50,6 +50,10 @@ class Program
         rootCommand.AddCommand(CreateActivateCommand(interactionCmds));
         rootCommand.AddCommand(CreateInvokeCommand(interactionCmds));
         rootCommand.AddCommand(CreateClickCommand(interactionCmds));
+        rootCommand.AddCommand(CreateMoveCommand(interactionCmds));
+        rootCommand.AddCommand(CreateDoubleClickCommand(interactionCmds));
+        rootCommand.AddCommand(CreateScrollCommand(interactionCmds));
+        rootCommand.AddCommand(CreateDragCommand(interactionCmds));
         rootCommand.AddCommand(CreateTypeTextCommand(interactionCmds));
         rootCommand.AddCommand(CreateKeyCommand(interactionCmds));
         rootCommand.AddCommand(CreateWaitForCommand(new WaitForCommand(automation, capture)));
@@ -246,6 +250,66 @@ class Program
         c.SetHandler(
             (x, y, r, h, g) => cmds.ClickAsync(x, y, r, h, g),
             xOpt, yOpt, rightOpt, hwndOpt, guardOpt);
+        return c;
+    }
+
+    // ── move ──
+    static Command CreateMoveCommand(InteractionCommands cmds)
+    {
+        var xOpt = new Option<int>("--x") { IsRequired = true };
+        var yOpt = new Option<int>("--y") { IsRequired = true };
+        var hwndOpt = new Option<string?>("--hwnd");
+        var guardOpt = new Option<string?>("--expected-state");
+        var c = new Command("move") { xOpt, yOpt, hwndOpt, guardOpt };
+        c.SetHandler(
+            (x, y, h, g) => cmds.MoveAsync(x, y, h, g),
+            xOpt, yOpt, hwndOpt, guardOpt);
+        return c;
+    }
+
+    // ── double-click ──
+    static Command CreateDoubleClickCommand(InteractionCommands cmds)
+    {
+        var xOpt = new Option<int>("--x") { IsRequired = true };
+        var yOpt = new Option<int>("--y") { IsRequired = true };
+        var rightOpt = new Option<bool>("--right");
+        var hwndOpt = new Option<string?>("--hwnd");
+        var guardOpt = new Option<string?>("--expected-state");
+        var c = new Command("double-click") { xOpt, yOpt, rightOpt, hwndOpt, guardOpt };
+        c.SetHandler(
+            (x, y, r, h, g) => cmds.DoubleClickAsync(x, y, r, h, g),
+            xOpt, yOpt, rightOpt, hwndOpt, guardOpt);
+        return c;
+    }
+
+    // ── scroll ──
+    static Command CreateScrollCommand(InteractionCommands cmds)
+    {
+        var xOpt = new Option<int>("--x") { IsRequired = true };
+        var yOpt = new Option<int>("--y") { IsRequired = true };
+        var deltaOpt = new Option<int>("--delta") { IsRequired = true };
+        var hwndOpt = new Option<string?>("--hwnd");
+        var guardOpt = new Option<string?>("--expected-state");
+        var c = new Command("scroll") { xOpt, yOpt, deltaOpt, hwndOpt, guardOpt };
+        c.SetHandler(
+            (x, y, d, h, g) => cmds.ScrollAsync(x, y, d, h, g),
+            xOpt, yOpt, deltaOpt, hwndOpt, guardOpt);
+        return c;
+    }
+
+    // ── drag ──
+    static Command CreateDragCommand(InteractionCommands cmds)
+    {
+        var fromXOpt = new Option<int>("--from-x") { IsRequired = true };
+        var fromYOpt = new Option<int>("--from-y") { IsRequired = true };
+        var toXOpt = new Option<int>("--to-x") { IsRequired = true };
+        var toYOpt = new Option<int>("--to-y") { IsRequired = true };
+        var hwndOpt = new Option<string?>("--hwnd");
+        var guardOpt = new Option<string?>("--expected-state");
+        var c = new Command("drag") { fromXOpt, fromYOpt, toXOpt, toYOpt, hwndOpt, guardOpt };
+        c.SetHandler(
+            (fx, fy, tx, ty, h, g) => cmds.DragAsync(fx, fy, tx, ty, h, g),
+            fromXOpt, fromYOpt, toXOpt, toYOpt, hwndOpt, guardOpt);
         return c;
     }
 
