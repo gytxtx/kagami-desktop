@@ -46,6 +46,140 @@ public class Win32InputBackendTests
     }
 
     [Fact]
+    public void Move_WithValidTarget_InjectsSingleMoveAndReportsVerification()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.MoveAsync(target, 100, 100, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal([1], injector.InputCounts);
+        Assert.Equal(NativeMethods.MOUSEEVENTF_MOVE, injector.Inputs[0][0].u.mi.dwFlags & NativeMethods.MOUSEEVENTF_MOVE);
+        Assert.Equal(100, result.X);
+        Assert.Equal(100, result.Y);
+        Assert.True(result.Interaction.TargetForegroundVerified);
+        Assert.True(result.Interaction.TargetDeliveryVerified);
+    }
+
+    [Fact]
+    public void DoubleClick_WithValidTarget_InjectsFiveEvents()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.DoubleClickAsync(target, 100, 100, true, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal([5], injector.InputCounts);
+        Assert.True(result.RightButton);
+        Assert.True(result.Interaction.PhysicalInputGenerated);
+    }
+
+    [Fact]
+    public void Scroll_WithValidTarget_InjectsMoveAndWheel()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.ScrollAsync(target, 100, 100, -2, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal([2], injector.InputCounts);
+        Assert.Equal(-2, result.Delta);
+        Assert.Equal(-2 * NativeMethods.WHEEL_DELTA, injector.Inputs[0][1].u.mi.mouseData);
+        Assert.Equal(NativeMethods.MOUSEEVENTF_WHEEL, injector.Inputs[0][1].u.mi.dwFlags & NativeMethods.MOUSEEVENTF_WHEEL);
+    }
+
+    [Fact]
+    public void Drag_WithValidTarget_InjectsFourEvents()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.DragAsync(target, 100, 100, 200, 200, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal([4], injector.InputCounts);
+        Assert.Equal((100, 100, 200, 200), (result.FromX, result.FromY, result.ToX, result.ToY));
+    }
+
+    [Fact]
+    public void DoubleClick_WhenPointerTargetValidationFails_DoesNotInject()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(DifferentForegroundWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.DoubleClickAsync(target, 100, 100, false, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.ForegroundActivationDenied, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Fact]
+    public void Scroll_WithZeroDelta_FailsBeforeInjection()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.ScrollAsync(target, 100, 100, 0, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Fact]
+    public void Drag_WhenEndPointerTargetValidationFails_DoesNotInject()
+    {
+        var target = new IntPtr(100);
+        var otherWindow = new IntPtr(200);
+        var windows = ValidTargetWindows(target);
+        windows.WindowAtPoints[(200, 200)] = otherWindow;
+        windows.ProcessIds[otherWindow] = 20;
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(windows, injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.DragAsync(target, 100, 100, 200, 200, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.PointNotInTarget, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(3u)]
+    public void Drag_WithPartialInjection_Fails(uint injectedCount)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector(injectedCount);
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.DragAsync(target, 100, 100, 200, 200, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InputInjectionFailed, exception.ErrorCode);
+        Assert.Equal(1, injector.Calls);
+        Assert.Equal([4], injector.InputCounts);
+    }
+
+    [Fact]
     public void Key_WhenKeyboardTargetValidationFails_DoesNotInject()
     {
         var target = new IntPtr(100);
@@ -295,11 +429,13 @@ public class Win32InputBackendTests
 
         public int Calls { get; private set; }
         public List<int> InputCounts { get; } = [];
+        public List<NativeMethods.INPUT[]> Inputs { get; } = [];
 
         public uint SendInput(NativeMethods.INPUT[] inputs)
         {
             Calls++;
             InputCounts.Add(inputs.Length);
+            Inputs.Add(inputs);
             return _results.TryDequeue(out var result) ? result : (uint)inputs.Length;
         }
     }
@@ -323,12 +459,14 @@ public class Win32InputBackendTests
     {
         public IntPtr ForegroundWindow { get; init; }
         public IntPtr WindowAtPoint { get; init; }
+        public Dictionary<(int X, int Y), IntPtr> WindowAtPoints { get; } = [];
         public Dictionary<IntPtr, IntPtr> Parents { get; } = [];
         public Dictionary<IntPtr, IntPtr> Owners { get; } = [];
         public Dictionary<IntPtr, int> ProcessIds { get; } = [];
 
         public IntPtr GetForegroundWindow() => ForegroundWindow;
-        public IntPtr WindowFromPoint(int x, int y) => WindowAtPoint;
+        public IntPtr WindowFromPoint(int x, int y) =>
+            WindowAtPoints.TryGetValue((x, y), out var hwnd) ? hwnd : WindowAtPoint;
         public IntPtr GetParent(IntPtr hwnd) => Parents.GetValueOrDefault(hwnd);
         public IntPtr GetOwner(IntPtr hwnd) => Owners.GetValueOrDefault(hwnd);
         public int GetProcessId(IntPtr hwnd) => ProcessIds.GetValueOrDefault(hwnd);
