@@ -230,7 +230,11 @@ public class Win32InputBackend : IInputBackend, IDisposable
                 CreateMouseInput(x, y, (uint)(upFlag | MOUSEEVENTF_ABSOLUTE), 0)
             };
 
-            EnsureInjectionCompleted(inputs);
+            EnsureInjectionCompleted(inputs, injectedCount => injectedCount switch
+            {
+                2 or 4 => CreateMouseInput(x, y, (uint)(upFlag | MOUSEEVENTF_ABSOLUTE), 0),
+                _ => null
+            });
 
             return new DoubleClickResult
             {
@@ -298,7 +302,12 @@ public class Win32InputBackend : IInputBackend, IDisposable
                 CreateMouseInput(toX, toY, (uint)(MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE), 0)
             };
 
-            EnsureInjectionCompleted(inputs);
+            EnsureInjectionCompleted(inputs, injectedCount => injectedCount switch
+            {
+                2 => CreateMouseInput(fromX, fromY, (uint)(MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE), 0),
+                3 => CreateMouseInput(toX, toY, (uint)(MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE), 0),
+                _ => null
+            });
 
             return new DragResult
             {
@@ -519,11 +528,26 @@ public class Win32InputBackend : IInputBackend, IDisposable
         }
     }
 
-    private void EnsureInjectionCompleted(INPUT[] inputs)
+    private void EnsureInjectionCompleted(
+        INPUT[] inputs,
+        Func<uint, INPUT?>? recoveryInputFactory = null)
     {
         uint result = _inputInjector.SendInput(inputs);
         if (result != inputs.Length)
         {
+            var recoveryInput = recoveryInputFactory?.Invoke(result);
+            if (recoveryInput.HasValue)
+            {
+                try
+                {
+                    _inputInjector.SendInput([recoveryInput.Value]);
+                }
+                catch
+                {
+                    // Preserve the original injection failure after best-effort button release.
+                }
+            }
+
             throw new CommandException(
                 ErrorCodes.InputInjectionFailed,
                 $"SendInput injected {result} of {inputs.Length} events. GetLastError: {Marshal.GetLastWin32Error()}");
