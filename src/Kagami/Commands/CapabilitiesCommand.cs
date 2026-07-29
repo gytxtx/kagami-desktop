@@ -25,6 +25,7 @@ public class CapabilitiesCommand
                 DpiAwareness = "per-monitor-v2",
                 CaptureBackends = _capture.GetBackendAvailability(),
                 Uia = new UiaCapabilityInfo { Version = 3 },
+                MouseCommands = ["move", "double-click", "scroll", "drag"],
                 Elevated = IsElevated(),
                 InteractiveSession = Environment.UserInteractive
             };

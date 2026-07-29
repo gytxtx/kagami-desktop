@@ -260,12 +260,20 @@ public class Win32InputBackend : IInputBackend, IDisposable
                 throw new CommandException(ErrorCodes.InvalidArgument, "Scroll delta must not be zero.");
             }
 
+            var wheelData = (long)delta * WHEEL_DELTA;
+            if (wheelData is < int.MinValue or > int.MaxValue)
+            {
+                throw new CommandException(
+                    ErrorCodes.InvalidArgument,
+                    $"Scroll delta must be between {int.MinValue / WHEEL_DELTA} and {int.MaxValue / WHEEL_DELTA}.");
+            }
+
             ValidateVirtualDesktopCoordinate(x, y);
             var validation = _targetValidator.ValidatePointerTarget(targetHwnd, x, y);
             var inputs = new[]
             {
                 CreateMouseInput(x, y, (uint)(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE), 0),
-                CreateMouseInput(x, y, (uint)(MOUSEEVENTF_WHEEL | MOUSEEVENTF_ABSOLUTE), delta * WHEEL_DELTA)
+                CreateMouseInput(x, y, (uint)(MOUSEEVENTF_WHEEL | MOUSEEVENTF_ABSOLUTE), (int)wheelData)
             };
 
             EnsureInjectionCompleted(inputs);

@@ -51,6 +51,23 @@ public class CommandLineContractTests
         Assert.True(string.IsNullOrWhiteSpace(result.Stderr), result.Stderr);
     }
 
+    [Fact]
+    public async Task Capabilities_ReportsAllPhysicalMouseCommands()
+    {
+        var result = await InvokeCli("capabilities");
+
+        Assert.Equal(0, result.ExitCode);
+        using var response = JsonDocument.Parse(result.Stdout);
+        var data = response.RootElement.GetProperty("data");
+        Assert.True(data.TryGetProperty("capture_backends", out _));
+        Assert.True(data.TryGetProperty("uia", out _));
+        Assert.Equal(
+            ["move", "double-click", "scroll", "drag"],
+            data.GetProperty("mouse_commands")
+                .EnumerateArray()
+                .Select(command => command.GetString()));
+    }
+
     [Theory]
     [InlineData("wait-for", "element", "--locator", "{}")]
     [InlineData("wait-for", "--condition", "element", "--locator", "{}")]
@@ -111,8 +128,32 @@ public class CommandLineContractTests
         Assert.Equal("test.guard", result.LastValidatedGuardPath);
         using var response = JsonDocument.Parse(result.Stdout);
         Assert.True(response.RootElement.GetProperty("success").GetBoolean());
-        if (args[0] == "double-click")
-            Assert.True(response.RootElement.GetProperty("data").GetProperty("rightButton").GetBoolean());
+        var data = response.RootElement.GetProperty("data");
+        Assert.Equal("0x1234", data.GetProperty("interaction").GetProperty("target_hwnd").GetString());
+
+        switch (args[0])
+        {
+            case "move":
+                Assert.Equal(100, data.GetProperty("x").GetInt32());
+                Assert.Equal(200, data.GetProperty("y").GetInt32());
+                break;
+            case "double-click":
+                Assert.Equal(100, data.GetProperty("x").GetInt32());
+                Assert.Equal(200, data.GetProperty("y").GetInt32());
+                Assert.True(data.GetProperty("rightButton").GetBoolean());
+                break;
+            case "scroll":
+                Assert.Equal(100, data.GetProperty("x").GetInt32());
+                Assert.Equal(200, data.GetProperty("y").GetInt32());
+                Assert.Equal(-2, data.GetProperty("delta").GetInt32());
+                break;
+            case "drag":
+                Assert.Equal(100, data.GetProperty("fromX").GetInt32());
+                Assert.Equal(200, data.GetProperty("fromY").GetInt32());
+                Assert.Equal(300, data.GetProperty("toX").GetInt32());
+                Assert.Equal(400, data.GetProperty("toY").GetInt32());
+                break;
+        }
     }
 
     [Theory]
@@ -321,7 +362,7 @@ public class CommandLineContractTests
             CancellationToken ct) => throw new NotSupportedException();
 
         public Task<MoveResult> MoveAsync(IntPtr targetHwnd, int x, int y, CancellationToken ct) =>
-            Task.FromResult(new MoveResult { X = x, Y = y, Interaction = new InteractionResult() });
+            Task.FromResult(new MoveResult { X = x, Y = y, Interaction = PhysicalInteraction(targetHwnd) });
 
         public Task<DoubleClickResult> DoubleClickAsync(
             IntPtr targetHwnd,
@@ -334,7 +375,7 @@ public class CommandLineContractTests
                 X = x,
                 Y = y,
                 RightButton = rightButton,
-                Interaction = new InteractionResult()
+                Interaction = PhysicalInteraction(targetHwnd)
             });
 
         public Task<ScrollResult> ScrollAsync(
@@ -343,7 +384,13 @@ public class CommandLineContractTests
             int y,
             int delta,
             CancellationToken ct) =>
-            Task.FromResult(new ScrollResult { X = x, Y = y, Delta = delta, Interaction = new InteractionResult() });
+            Task.FromResult(new ScrollResult
+            {
+                X = x,
+                Y = y,
+                Delta = delta,
+                Interaction = PhysicalInteraction(targetHwnd)
+            });
 
         public Task<DragResult> DragAsync(
             IntPtr targetHwnd,
@@ -358,8 +405,11 @@ public class CommandLineContractTests
                 FromY = fromY,
                 ToX = toX,
                 ToY = toY,
-                Interaction = new InteractionResult()
+                Interaction = PhysicalInteraction(targetHwnd)
             });
+
+        private static InteractionResult PhysicalInteraction(IntPtr targetHwnd) =>
+            new() { TargetHwnd = UiaAutomationBackend.FormatHwnd(targetHwnd) };
 
         public Task<TypeTextResult> TypeTextAsync(TypeTextOptions options, CancellationToken ct) =>
             throw new NotSupportedException();

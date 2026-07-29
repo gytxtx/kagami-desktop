@@ -171,6 +171,7 @@ wait-for        — 条件等待（element/element-gone/property/window/window-r
     "legacy_gdi": true
   },
   "uia": { "version": 3 },
+  "mouse_commands": ["move", "double-click", "scroll", "drag"],
   "elevated": false,
   "interactive_session": true
 }
@@ -301,7 +302,7 @@ double-click --hwnd X --x Y --y Y [--right] [--expected-state guard-uuid.json]
 scroll --hwnd X --x Y --y Y --delta N [--expected-state guard-uuid.json]
 ```
 
-在屏幕物理坐标滚动。`--delta` 必须非零；正值向上滚动，负值向下滚动。注入前按相同的目标、前台和坐标命中契约验证 `--hwnd`（或 guard）与 `--x`、`--y`。
+在屏幕物理坐标滚动。`--delta` 必须在 `-17895697..17895697` 范围内且不能为零；正值向上滚动，负值向下滚动。Kagami 会先把 delta 换算为 Win32 的 120 单位滚轮数据，若结果无法装入 32 位有符号 `mouseData`，会在注入前返回 `INVALID_ARGUMENT`。通过参数校验后，再按相同的目标、前台和坐标命中契约验证 `--hwnd`（或 guard）与 `--x`、`--y`。
 
 ### `drag`
 

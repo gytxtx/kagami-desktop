@@ -264,6 +264,39 @@ public class Win32InputBackendTests
         Assert.Equal(0, injector.Calls);
     }
 
+    [Theory]
+    [InlineData(int.MaxValue)]
+    [InlineData(int.MinValue)]
+    public void Scroll_WhenWheelDeltaConversionWouldOverflow_FailsBeforeInjection(int delta)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.ScrollAsync(target, 100, 100, delta, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Theory]
+    [InlineData(17895697, 2147483640)]
+    [InlineData(-17895697, -2147483640)]
+    public void Scroll_WithLargestConvertibleDelta_PreservesDirection(int delta, int expectedWheelData)
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var result = fixture.Input.ScrollAsync(target, 100, 100, delta, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Assert.Equal(delta, result.Delta);
+        Assert.Equal(expectedWheelData, injector.Inputs[0][1].u.mi.mouseData);
+    }
+
     [Fact]
     public void Drag_WhenEndPointerTargetValidationFails_DoesNotInject()
     {
