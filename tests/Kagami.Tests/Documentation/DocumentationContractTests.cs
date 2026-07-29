@@ -67,6 +67,23 @@ public sealed class DocumentationContractTests
     }
 
     [Fact]
+    public void MouseOperationDocumentation_CoversEveryPhysicalMouseCommand()
+    {
+        var readme = ReadDocument("README.md");
+        var design = ReadDocument("docs/DESIGN.md");
+
+        Assert.Contains("kagami move --hwnd", readme);
+        Assert.Contains("kagami double-click --hwnd", readme);
+        Assert.Contains("kagami scroll --hwnd", readme);
+        Assert.Contains("kagami drag --hwnd", readme);
+
+        Assert.Contains("### `move`", design);
+        Assert.Contains("### `double-click`", design);
+        Assert.Contains("### `scroll`", design);
+        Assert.Contains("### `drag`", design);
+    }
+
+    [Fact]
     public void TreeQueryDocumentation_CoversProgressiveDiscoveryContract()
     {
         var allDocs = ReadAllDocuments();
