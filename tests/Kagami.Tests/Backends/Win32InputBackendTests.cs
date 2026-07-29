@@ -235,6 +235,21 @@ public class Win32InputBackendTests
     }
 
     [Fact]
+    public void Drag_WithOutOfBoundsStart_FailsBeforeInjection()
+    {
+        var target = new IntPtr(100);
+        var injector = new RecordingInputInjector();
+        using var fixture = CreateFixture(ValidTargetWindows(target), injector);
+
+        var exception = Assert.Throws<CommandException>(() =>
+            fixture.Input.DragAsync(target, int.MaxValue, 100, 200, 200, CancellationToken.None)
+                .GetAwaiter().GetResult());
+
+        Assert.Equal(ErrorCodes.InvalidArgument, exception.ErrorCode);
+        Assert.Equal(0, injector.Calls);
+    }
+
+    [Fact]
     public void Scroll_WithZeroDelta_FailsBeforeInjection()
     {
         var target = new IntPtr(100);
