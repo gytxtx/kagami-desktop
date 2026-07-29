@@ -98,6 +98,44 @@ public class CommandLineContractTests
         Assert.NotEmpty(result.Stderr);
     }
 
+    [Theory]
+    [InlineData("move", "--x", "100", "--y", "200", "--hwnd", "0x1234")]
+    [InlineData("double-click", "--x", "100", "--y", "200", "--hwnd", "0x1234")]
+    [InlineData("scroll", "--x", "100", "--y", "200", "--delta", "-2", "--hwnd", "0x1234")]
+    [InlineData("drag", "--from-x", "100", "--from-y", "200", "--to-x", "300", "--to-y", "400", "--hwnd", "0x1234")]
+    public async Task MouseCommands_CompleteArguments_AreRecognized(params string[] args)
+    {
+        var result = await InvokeCli(args);
+
+        Assert.Equal(0, result.ExitCode);
+        using var response = JsonDocument.Parse(result.Stdout);
+        Assert.True(response.RootElement.GetProperty("success").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("move", "--y", "200")]
+    [InlineData("move", "--x", "100")]
+    [InlineData("double-click", "--y", "200")]
+    [InlineData("double-click", "--x", "100")]
+    [InlineData("scroll", "--y", "200", "--delta", "-2")]
+    [InlineData("scroll", "--x", "100", "--delta", "-2")]
+    [InlineData("scroll", "--x", "100", "--y", "200")]
+    [InlineData("drag", "--from-y", "200", "--to-x", "300", "--to-y", "400")]
+    [InlineData("drag", "--from-x", "100", "--to-x", "300", "--to-y", "400")]
+    [InlineData("drag", "--from-x", "100", "--from-y", "200", "--to-y", "400")]
+    [InlineData("drag", "--from-x", "100", "--from-y", "200", "--to-x", "300")]
+    public async Task MouseCommands_MissingRequiredOption_IsRejected(params string[] args)
+    {
+        var result = await InvokeCli(args);
+
+        Assert.Equal(2, result.ExitCode);
+        using var response = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("parse", response.RootElement.GetProperty("command").GetString());
+        Assert.Equal(
+            ErrorCodes.InvalidArgument,
+            response.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
     [Fact]
     public void WindowInfoReader_ReadsEveryFieldFromOneSnapshot()
     {
@@ -277,6 +315,47 @@ public class CommandLineContractTests
             int y,
             bool rightButton,
             CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<MoveResult> MoveAsync(IntPtr targetHwnd, int x, int y, CancellationToken ct) =>
+            Task.FromResult(new MoveResult { X = x, Y = y, Interaction = new InteractionResult() });
+
+        public Task<DoubleClickResult> DoubleClickAsync(
+            IntPtr targetHwnd,
+            int x,
+            int y,
+            bool rightButton,
+            CancellationToken ct) =>
+            Task.FromResult(new DoubleClickResult
+            {
+                X = x,
+                Y = y,
+                RightButton = rightButton,
+                Interaction = new InteractionResult()
+            });
+
+        public Task<ScrollResult> ScrollAsync(
+            IntPtr targetHwnd,
+            int x,
+            int y,
+            int delta,
+            CancellationToken ct) =>
+            Task.FromResult(new ScrollResult { X = x, Y = y, Delta = delta, Interaction = new InteractionResult() });
+
+        public Task<DragResult> DragAsync(
+            IntPtr targetHwnd,
+            int fromX,
+            int fromY,
+            int toX,
+            int toY,
+            CancellationToken ct) =>
+            Task.FromResult(new DragResult
+            {
+                FromX = fromX,
+                FromY = fromY,
+                ToX = toX,
+                ToY = toY,
+                Interaction = new InteractionResult()
+            });
 
         public Task<TypeTextResult> TypeTextAsync(TypeTextOptions options, CancellationToken ct) =>
             throw new NotSupportedException();
