@@ -106,6 +106,19 @@ public sealed class DocumentationContractTests
     }
 
     [Fact]
+    public void Skill_DocumentsPhysicalMouseCommandsAndSafetyContract()
+    {
+        var skill = ReadDocument("SKILL.md");
+
+        Assert.Contains("`click` / `move` / `double-click` / `scroll` / `drag`", skill);
+        Assert.Contains("`--hwnd` or a validated `--expected-state` guard", skill);
+        Assert.Contains("`scroll --delta` accepts positive values to scroll up and negative values to scroll down", skill);
+        Assert.Contains("`double-click --right`", skill);
+        Assert.Contains("validates both endpoints before injecting any event", skill);
+        Assert.Contains("`physical_input_generated: true`", skill);
+    }
+
+    [Fact]
     public void TreeQueryDocumentation_CoversProgressiveDiscoveryContract()
     {
         var allDocs = ReadAllDocuments();

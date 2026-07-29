@@ -18,9 +18,9 @@ Treat Kagami as an external Windows observation-and-action tool. Parse stdout as
 5. Narrow the UIA scope with `find`, then expand only the needed subtree with `get-tree`. Prefer a returned, re-resolvable `locator`; use `runtime_id` and `tree_path` only for short-lived discovery, never as persistent locators.
 6. Choose interaction semantics deliberately:
    - `invoke` / `type-text --mode value`: UIA provider behavior.
-   - `click` / `key` / `type-text --mode keyboard`: physical reachability.
-7. Bind every physical action to its target HWND. `click` may derive it from a validated `--expected-state` guard; `key` and `type-text --mode keyboard` require explicit `--hwnd`. The target window must be foreground when Kagami injects input.
-8. For supported state-changing commands (`invoke`, `click`, `type-text`, and `key`), pass the newest `--expected-state <guard_path>`. `activate` does not accept this option; observational `wait-for` does. A guard expires after 120 seconds, but this TTL is only an upper bound: make a fresh observation immediately before acting. On `STALE_OBSERVATION`, observe again.
+   - `click` / `move` / `double-click` / `scroll` / `drag` / `key` / `type-text --mode keyboard`: physical reachability.
+7. Bind every physical mouse action to its target HWND with `--hwnd` or a validated `--expected-state` guard. `key` and `type-text --mode keyboard` require explicit `--hwnd`. The target window must be foreground when Kagami injects input; mouse coordinates must hit that window family.
+8. For supported state-changing commands (`invoke`, `click`, `type-text`, and `key`), pass the newest `--expected-state <guard_path>`. The physical mouse commands `move`, `double-click`, `scroll`, and `drag` also accept the newest guard and may use it to derive their target HWND. `activate` does not accept this option; observational `wait-for` does. A guard expires after 120 seconds, but this TTL is only an upper bound: make a fresh observation immediately before acting. On `STALE_OBSERVATION`, observe again.
 9. Prefer the positional wait syntax `kagami wait-for element ...`; `kagami wait-for --condition element ...` remains compatible. Use wait conditions instead of fixed sleeps.
 10. Observe again after the action. Claim success only after the expected visual and/or UIA state change is confirmed.
 
@@ -53,11 +53,16 @@ For `get-tree`, `--path`, `--runtime-id`, and `--locator` are mutually exclusive
   <!-- kagami-command-contract -->
   ```powershell
   kagami click --hwnd 0x607fc --x 840 --y 560 --expected-state "C:\...\guard.json"
+  kagami move --hwnd 0x607fc --x 840 --y 560 --expected-state "C:\...\guard.json"
+  kagami double-click --hwnd 0x607fc --x 840 --y 560 --expected-state "C:\...\guard.json"
+  kagami scroll --hwnd 0x607fc --x 840 --y 560 --delta -3 --expected-state "C:\...\guard.json"
+  kagami drag --hwnd 0x607fc --from-x 840 --from-y 560 --to-x 1040 --to-y 560 --expected-state "C:\...\guard.json"
   kagami key --keys "CTRL+L" --hwnd 0x607fc --expected-state "C:\...\guard.json"
   kagami type-text --text "hello" --mode keyboard --hwnd 0x607fc --expected-state "C:\...\guard.json"
   ```
 
-- Confirm the target and foreground state before physical input. The target window must be foreground; for clicks, the point must also hit that window family.
+- Confirm the target and foreground state before physical input. The target window must be foreground; every mouse coordinate must hit that window family. `scroll --delta` accepts positive values to scroll up and negative values to scroll down (and rejects zero or out-of-range values). Add `double-click --right` for a right-button double-click.
+- `drag` validates both endpoints before injecting any event, then moves to the start, presses the left button, moves to the end, and releases it. If either endpoint fails validation, no button-down event is injected.
 - `physical_input_generated: true` only means Kagami injected input; it does not prove the business postcondition. Verify with `wait-for` and a fresh observation.
 - Never reuse coordinates after the window moves, resizes, or the guard expires.
 - Clipboard fallback is opt-in through `--allow-clipboard`.
